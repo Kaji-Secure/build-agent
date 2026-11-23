@@ -18,6 +18,16 @@ BINFMT_NAMES = {
     "riscv": "riscv64",
     "amd64": "amd64",
 }  # the emulator's name for an architecture
+# rootless podman makes its own user namespace: it runs as a plain user, but newuidmap must be able to gain the capability to write the id maps, and
+# the seccomp and AppArmor profiles must allow unshare. The one security context a task may ask for (``rootless``), and no other.
+ROOTLESS = {
+    "runAsUser": 1000,
+    "runAsGroup": 1000,
+    "runAsNonRoot": True,
+    "allowPrivilegeEscalation": True,
+    "seccompProfile": {"type": "Unconfined"},
+    "appArmorProfile": {"type": "Unconfined"},
+}
 log = logging.getLogger("kaji_agent")
 
 
@@ -25,8 +35,49 @@ def job_name(uid):
     return f"kaji-{uid[:13]}"
 
 
+def volume_for(name, v):
+    """``(volume, mount)`` for one entry of a task's ``volumes``: ``kind`` is ``empty`` (``size``), ``image`` (``image``: the tree), ``config``
+    (a ConfigMap of ``data``) or ``secret`` (a Secret of ``data``); the last two are made by ``extras_for``."""
+    kind = v["kind"]
+    if kind == "empty":
+        volume = {"emptyDir": {"sizeLimit": v["size"]} if v.get("size") else {}}
+    elif kind == "image":
+        volume = {"image": {"reference": v["image"], "pullPolicy": "IfNotPresent"}}
+    elif kind == "config":
+        volume = {"configMap": {"name": f"{name}-{v['name']}"}}
+    elif kind == "secret":
+        volume = {"secret": {"secretName": f"{name}-{v['name']}"}}
+    else:
+        raise ValueError(f"unknown volume kind {kind}")
+    mount = {"name": v["name"], "mountPath": v["path"], **({"readOnly": True} if v.get("read_only") else {})}
+    return {"name": v["name"], **volume}, mount
+
+
+def generic_pod(name, payload):
+    """The pod of a task that describes it itself: ``volumes``, ``resources`` and ``rootless``, as the operator's own Job for it has them."""
+    volumes, mounts = [], []
+    for v in payload["volumes"]:
+        volume, mount = volume_for(name, v)
+        volumes.append(volume)
+        mounts.append(mount)
+    container = {
+        "name": "worker",
+        "image": payload["image"],
+        "command": payload["command"],
+        "resources": payload["resources"],
+        "env": [{"name": k, "value": v} for k, v in payload.get("env", {}).items()],
+        "volumeMounts": mounts,
+    }
+    if payload.get("rootless"):
+        container["securityContext"] = ROOTLESS
+    return {"restartPolicy": "Never", "volumes": volumes, "containers": [container]}
+
+
 def job_for(uid, payload, namespace):
     name = job_name(uid)
+    if "volumes" in payload:
+        pod = generic_pod(name, payload)
+        return _job(uid, name, namespace, _with_extras(pod, name, payload))
     resources = {
         "requests": {"cpu": DRY_RUN_CPU if payload.get("dry_run") else str(payload["cpus"])},
         "limits": {"cpu": str(payload["cpus"])},
@@ -57,6 +108,11 @@ def job_for(uid, payload, namespace):
             }
         ],
     }
+    return _job(uid, name, namespace, _with_extras(pod, name, payload))
+
+
+def _with_extras(pod, name, payload):
+    """What every task's pod may also have: the architecture it must run on, the login that pulls its image, an emulator to register."""
     if payload.get("arch"):
         pod["nodeSelector"] = {"kubernetes.io/arch": payload["arch"]}
     if payload.get("pull_secret"):
@@ -72,6 +128,10 @@ def job_for(uid, payload, namespace):
                 "securityContext": {"privileged": True},
             }
         ]
+    return pod
+
+
+def _job(uid, name, namespace, pod):
     return {
         "apiVersion": "batch/v1",
         "kind": "Job",
@@ -93,7 +153,7 @@ def extras_for(uid, payload, namespace, job):
         "ownerReferences": [{"apiVersion": "batch/v1", "kind": "Job", "name": name, "uid": job["metadata"]["uid"]}],
     }
     out = []
-    if payload.get("config"):
+    if payload.get("config") and "volumes" not in payload:
         out.append(
             (
                 f"/api/v1/namespaces/{namespace}/configmaps",
@@ -105,6 +165,31 @@ def extras_for(uid, payload, namespace, job):
                 },
             )
         )
+    for v in payload.get("volumes", []):
+        if v["kind"] == "config":
+            out.append(
+                (
+                    f"/api/v1/namespaces/{namespace}/configmaps",
+                    {
+                        "apiVersion": "v1",
+                        "kind": "ConfigMap",
+                        "metadata": {"name": f"{name}-{v['name']}", **meta},
+                        "data": v["data"],
+                    },
+                )
+            )
+        elif v["kind"] == "secret":
+            out.append(
+                (
+                    f"/api/v1/namespaces/{namespace}/secrets",
+                    {
+                        "apiVersion": "v1",
+                        "kind": "Secret",
+                        "metadata": {"name": f"{name}-{v['name']}", **meta},
+                        "stringData": v["data"],
+                    },
+                )
+            )
     if payload.get("pull_secret"):
         out.append(
             (

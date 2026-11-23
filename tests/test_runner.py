@@ -180,3 +180,73 @@ async def test_the_runner_makes_the_job_and_then_what_it_needs():
 
     await Runner(kube, send, poll=0).run(UID, FOREIGN)
     assert [p.rsplit("/", 1)[1] for p, _ in kube.made] == ["configmaps", "secrets"] and out[-1]["state"] == "done"
+
+
+ARTIFACT = {
+    "kind": "artifact-build",
+    "image": "byon.example/worker/waldmeister-builder:1",
+    "command": ["waldmeister", "rootfs-build"],
+    "env": {"WM_ROOTFS": "{}"},
+    "resources": {"requests": {"cpu": "2", "memory": "4Gi"}, "limits": {"memory": "4Gi"}},
+    "rootless": True,
+    "arch": "",
+    "pull_secret": "",
+    "volumes": [
+        {"name": "store", "kind": "empty", "path": "/home/podman/.local/share/containers", "size": "10Gi"},
+        {
+            "name": "tree",
+            "kind": "image",
+            "path": "/var/db/repos/gentoo",
+            "read_only": True,
+            "image": "byon.example/trees/acme/acme-t:abc",
+        },
+        {"name": "config", "kind": "config", "path": "/wm/config", "read_only": True, "data": {"files.json": "{}"}},
+        {"name": "auth", "kind": "secret", "path": "/auth", "read_only": True, "data": {"config.json": "{}"}},
+    ],
+}
+
+
+def test_a_task_that_describes_its_pod_gets_it_as_described():
+    job = job_for(UID, ARTIFACT, "kaji")
+    pod = job["spec"]["template"]["spec"]
+    c = pod["containers"][0]
+    name = job_name(UID)
+    assert c["resources"] == ARTIFACT["resources"] and c["command"] == ["waldmeister", "rootfs-build"]
+    assert (
+        c["securityContext"]["seccompProfile"] == {"type": "Unconfined"} and c["securityContext"]["runAsUser"] == 1000
+    )
+    vols = {v["name"]: v for v in pod["volumes"]}
+    assert vols["store"] == {"name": "store", "emptyDir": {"sizeLimit": "10Gi"}}
+    assert vols["tree"]["image"]["reference"] == "byon.example/trees/acme/acme-t:abc"
+    assert (
+        vols["config"]["configMap"]["name"] == f"{name}-config"
+        and vols["auth"]["secret"]["secretName"] == f"{name}-auth"
+    )
+    mounts = {m["name"]: m for m in c["volumeMounts"]}
+    assert (
+        mounts["tree"] == {"name": "tree", "mountPath": "/var/db/repos/gentoo", "readOnly": True}
+        and "readOnly" not in mounts["store"]
+    )
+
+
+def test_a_task_without_rootless_has_no_security_context():
+    task = {**ARTIFACT, "rootless": False}
+    assert "securityContext" not in job_for(UID, task, "kaji")["spec"]["template"]["spec"]["containers"][0]
+
+
+def test_the_configmap_and_the_secret_of_a_described_pod_are_made_and_owned_by_the_job():
+    job = {**job_for(UID, ARTIFACT, "kaji"), "metadata": {**job_for(UID, ARTIFACT, "kaji")["metadata"], "uid": "u1"}}
+    made = {obj["kind"]: obj for _, obj in extras_for(UID, ARTIFACT, "kaji", job)}
+    assert made["ConfigMap"]["data"] == {"files.json": "{}"} and made["Secret"]["stringData"] == {"config.json": "{}"}
+    assert (
+        made["Secret"]["metadata"]["name"] == f"{job_name(UID)}-auth"
+        and made["Secret"]["metadata"]["ownerReferences"][0]["uid"] == "u1"
+    )
+    assert len(made) == 2
+
+
+def test_an_unknown_kind_of_volume_is_refused():
+    import pytest
+
+    with pytest.raises(ValueError):
+        job_for(UID, {**ARTIFACT, "volumes": [{"name": "x", "kind": "hostPath", "path": "/"}]}, "kaji")
