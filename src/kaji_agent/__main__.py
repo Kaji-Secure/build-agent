@@ -4,6 +4,7 @@ import logging
 import os
 
 from .client import Agent
+from .kube import Kube
 
 
 def main():
@@ -14,7 +15,10 @@ def main():
     if not args.token:
         parser.error("a token is needed: --token or KAJI_TOKEN")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    asyncio.run(Agent(args.url, args.token).run())
+    kube = Kube.in_cluster() if os.environ.get("KUBERNETES_SERVICE_HOST") else None
+    if not kube:
+        logging.warning("not running in a Kubernetes cluster: tasks are acknowledged, not run")
+    asyncio.run(Agent(args.url, args.token, kube).run())
 
 
 if __name__ == "__main__":

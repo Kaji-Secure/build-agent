@@ -1,0 +1,141 @@
+"""Run a task as a Kubernetes Job in the agent's own cluster, and report how it went.
+
+The task's payload is what the operator would have made a Job of: the image, the command, the worker's environment and its resources.
+The worker ends with a JSON termination message (what it built, reused, copied); that and the tail of its log are the task's result.
+"""
+
+import asyncio
+import json
+import logging
+
+LABEL = "kaji.systems/task"
+LOG_TAIL = 200  # lines of the worker's log sent with the result
+POLL_SECONDS = 5
+DRY_RUN_CPU = "100m"
+log = logging.getLogger("kaji_agent")
+
+
+def job_name(uid):
+    return f"kaji-{uid[:13]}"
+
+
+def job_for(uid, payload, namespace):
+    resources = {
+        "requests": {"cpu": DRY_RUN_CPU if payload.get("dry_run") else str(payload["cpus"])},
+        "limits": {"cpu": str(payload["cpus"])},
+    }
+    if payload.get("memory") and not payload.get("dry_run"):
+        resources["requests"]["memory"] = resources["limits"]["memory"] = payload["memory"]
+    pod = {
+        "restartPolicy": "Never",
+        "containers": [
+            {
+                "name": "worker",
+                "image": payload["image"],
+                "command": payload["command"],
+                "resources": resources,
+                "env": [{"name": k, "value": v} for k, v in payload.get("env", {}).items()],
+            }
+        ],
+    }
+    if payload.get("arch"):
+        pod["nodeSelector"] = {"kubernetes.io/arch": payload["arch"]}
+    return {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {"name": job_name(uid), "namespace": namespace, "labels": {LABEL: uid}},
+        "spec": {
+            "backoffLimit": 0,
+            "ttlSecondsAfterFinished": 3600,
+            "template": {"metadata": {"labels": {LABEL: uid}}, "spec": pod},
+        },
+    }
+
+
+def finished(job):
+    """``"done"``, ``"failed"`` or ``None`` (still going)."""
+    st = job.get("status") or {}
+    return "done" if st.get("succeeded") else "failed" if st.get("failed") else None
+
+
+class Runner:
+    def __init__(self, kube, send, poll=POLL_SECONDS):
+        self.kube, self.send, self.poll = kube, send, poll  # send: async callable(message dict)
+        self.active = set()
+
+    def _jobs(self):
+        return f"/apis/batch/v1/namespaces/{self.kube.namespace}/jobs"
+
+    def _result(self, uid, failed):
+        """What the worker said at its end, and the tail of its log: read from the Job's pod."""
+        base = f"/api/v1/namespaces/{self.kube.namespace}/pods"
+        pods = (self.kube.request("GET", f"{base}?labelSelector={LABEL}%3D{uid}") or {}).get("items", [])
+        if not pods:
+            return {}
+        pod = pods[0]
+        term = ((pod.get("status") or {}).get("containerStatuses") or [{}])[0].get("state", {}).get("terminated") or {}
+        result = {}
+        try:
+            result = json.loads(term.get("message") or "{}")
+        except ValueError:
+            result = {"message": term.get("message", "")}
+        if not isinstance(result, dict):
+            result = {}
+        try:
+            result["log"] = (
+                self.kube.request("GET", f"{base}/{pod['metadata']['name']}/log?tailLines={LOG_TAIL}", raw=True) or ""
+            )
+        except OSError:
+            pass
+        if failed and term.get("reason") and "message" not in result:
+            result["message"] = term["reason"]
+        return result
+
+    async def run(self, uid, payload):
+        """Start the task (if it is not started) and follow it to its end. Safe to call again for a task that is already going."""
+        if uid in self.active:
+            return
+        self.active.add(uid)
+        try:
+            if await asyncio.to_thread(self.kube.request, "GET", f"{self._jobs()}/{job_name(uid)}") is None:
+                await asyncio.to_thread(
+                    self.kube.request, "POST", self._jobs(), job_for(uid, payload, self.kube.namespace)
+                )
+            await self.send({"type": "status", "task": uid, "state": "running"})
+            while not (
+                state := finished(
+                    await asyncio.to_thread(self.kube.request, "GET", f"{self._jobs()}/{job_name(uid)}") or {}
+                )
+            ):
+                await asyncio.sleep(self.poll)
+            await self.send(
+                {
+                    "type": "status",
+                    "task": uid,
+                    "state": state,
+                    "result": await asyncio.to_thread(self._result, uid, state == "failed"),
+                }
+            )
+        except Exception as err:  # the task cannot go on: say so, instead of leaving it running for ever
+            log.exception("task %s failed", uid)
+            await self.send(
+                {
+                    "type": "status",
+                    "task": uid,
+                    "state": "failed",
+                    "result": {"message": f"the agent could not run it: {err}"},
+                }
+            )
+        finally:
+            self.active.discard(uid)
+
+    async def resume(self):
+        """After a restart: follow again the tasks whose Jobs are still there. Reporting an end twice is harmless."""
+        jobs = (await asyncio.to_thread(self.kube.request, "GET", f"{self._jobs()}?labelSelector={LABEL}") or {}).get(
+            "items", []
+        )
+        return [
+            asyncio.create_task(self.run(j["metadata"]["labels"][LABEL], {}))
+            for j in jobs
+            if j["metadata"].get("labels", {}).get(LABEL)
+        ]

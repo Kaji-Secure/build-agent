@@ -1,0 +1,48 @@
+# The kaji builder agent in your cluster (docs/builder-agent.rst). First make a builder in the console (Organization -> Builders) and keep its token:
+#   kubectl create namespace kaji-agent
+#   kubectl -n kaji-agent create secret generic kaji-agent --from-literal=token=kb_...
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: kaji-agent, namespace: kaji-agent}
+---
+# The agent makes Jobs in its own namespace, and reads their pods for the result and the log: nothing else, nowhere else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: kaji-agent, namespace: kaji-agent}
+rules:
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "create"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: kaji-agent, namespace: kaji-agent}
+subjects: [{kind: ServiceAccount, name: kaji-agent, namespace: kaji-agent}]
+roleRef: {kind: Role, name: kaji-agent, apiGroup: rbac.authorization.k8s.io}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: kaji-agent, namespace: kaji-agent}
+spec:
+  replicas: 1   # one agent per builder: a second one with the same token would be given the same tasks
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: kaji-agent}
+  template:
+    metadata:
+      labels: {app: kaji-agent}
+    spec:
+      serviceAccountName: kaji-agent
+      containers:
+        - name: agent
+          image: registry.shift-computing.de/oz123/kaji-agent:latest
+          env:
+            - {name: KAJI_URL, value: "wss://console.kaji.systems/agent/ws"}
+            - {name: KAJI_TOKEN, valueFrom: {secretKeyRef: {name: kaji-agent, key: token}}}
+          resources: {requests: {cpu: 50m, memory: 64Mi}, limits: {memory: 256Mi}}
