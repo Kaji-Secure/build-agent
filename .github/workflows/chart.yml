@@ -1,0 +1,28 @@
+name: Publish the Helm chart
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Lint
+        run: helm lint chart/kaji-agent
+      - name: Package
+        # The tag v1.2.3 makes chart and app version 1.2.3; a manual run keeps what Chart.yaml says.
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then v="${GITHUB_REF_NAME#v}"; set -- --version "$v" --app-version "$v"; fi
+          helm package chart/kaji-agent --destination dist "$@"
+      - name: Push to ghcr.io
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm push dist/kaji-agent-*.tgz "oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"
