@@ -152,10 +152,13 @@ def quantity(text):
 
 def schedulable(node):
     """Can a task's pod run on this node? Its Jobs tolerate no taint, so a node that is cordoned or has a NoSchedule or NoExecute taint (the control
-    plane of most clusters) never gets one, however big it is."""
+    plane of most clusters) never gets one, however big it is; nor does one that is not Ready (a node that does not say is taken as ready)."""
     spec = node.get("spec") or {}
-    return not spec.get("unschedulable") and not any(
-        t.get("effect") in ("NoSchedule", "NoExecute") for t in spec.get("taints") or []
+    ready = [c.get("status") for c in (node.get("status") or {}).get("conditions") or [] if c.get("type") == "Ready"]
+    return (
+        not spec.get("unschedulable")
+        and ready in ([], ["True"])
+        and not any(t.get("effect") in ("NoSchedule", "NoExecute") for t in spec.get("taints") or [])
     )
 
 

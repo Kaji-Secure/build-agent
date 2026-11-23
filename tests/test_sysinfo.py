@@ -230,3 +230,10 @@ def test_the_nodes_list_leaves_out_the_ones_that_take_no_builds():
 
     listed = sysinfo.nodes(Kube())
     assert [n["name"] for n in listed] == ["w1"]
+
+
+def test_a_node_that_is_not_ready_takes_no_builds():
+    assert sysinfo.schedulable({"status": {"conditions": [{"type": "Ready", "status": "True"}]}})
+    assert not sysinfo.schedulable({"status": {"conditions": [{"type": "Ready", "status": "False"}]}})
+    assert not sysinfo.schedulable({"status": {"conditions": [{"type": "Ready", "status": "Unknown"}]}})
+    assert sysinfo.schedulable({})

@@ -63,7 +63,10 @@ def test_a_tainted_or_cordoned_node_does_not_count_for_what_the_cluster_can_run(
     }
     cordoned = {**node("amd64", "12", "32Gi"), "spec": {"unschedulable": True}}
     prefer = {**node("amd64", "4", "8Gi"), "spec": {"taints": [{"key": "x", "effect": "PreferNoSchedule"}]}}
-    info = node_info(Nodes([plane, cordoned, prefer, node("amd64", "4", "8Gi")]))
+    down = {**node("amd64", "12", "32Gi"), "status": {**node("amd64", "12", "32Gi")["status"], "conditions": [{"type": "Ready", "status": "False"}]}}
+    up = {**node("amd64", "4", "8Gi")}
+    up["status"] = {**up["status"], "conditions": [{"type": "MemoryPressure", "status": "False"}, {"type": "Ready", "status": "True"}]}
+    info = node_info(Nodes([plane, cordoned, down, prefer, up]))
     assert (
         info["arches"] == ["amd64"]
         and info["cpus"] == 4
