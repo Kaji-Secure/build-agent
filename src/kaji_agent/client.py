@@ -19,8 +19,49 @@ log = logging.getLogger("kaji_agent")
 BACKOFF_MAX = 60
 
 
-def node_info():
-    return {"hostname": platform.node(), "arch": platform.machine(), "system": platform.system()}
+UNITS = {
+    "Ki": 1024,
+    "Mi": 1024**2,
+    "Gi": 1024**3,
+    "Ti": 1024**4,
+    "k": 1000,
+    "M": 1000**2,
+    "G": 1000**3,
+    "T": 1000**4,
+    "m": 0.001,
+}
+
+
+def quantity(text):
+    """A Kubernetes quantity (``3920m``, ``16Gi``) as a number."""
+    text = str(text)
+    for unit in sorted(UNITS, key=len, reverse=True):
+        if text.endswith(unit):
+            return float(text[: -len(unit)]) * UNITS[unit]
+    return float(text)
+
+
+def cluster_capacity(kube):
+    """What the cluster's nodes can run: their architectures and the size of the biggest one (a task is one pod on one node). Empty when the
+    agent may not list nodes: the server then goes by the host's architecture."""
+    try:
+        nodes = (kube.request("GET", "/api/v1/nodes") or {}).get("items", [])
+        return {
+            "arches": sorted({n["status"]["nodeInfo"]["architecture"] for n in nodes}),
+            "cpus": max(quantity(n["status"]["allocatable"]["cpu"]) for n in nodes),
+            "memory": max(quantity(n["status"]["allocatable"]["memory"]) for n in nodes),
+        }
+    except (OSError, KeyError, ValueError):
+        return {}
+
+
+def node_info(kube=None):
+    return {
+        "hostname": platform.node(),
+        "arch": platform.machine(),
+        "system": platform.system(),
+        **(cluster_capacity(kube) if kube else {}),
+    }
 
 
 class Agent:
@@ -34,7 +75,7 @@ class Agent:
 
         runner = Runner(self.kube, send) if self.kube else None
         running = set()  # the tasks being followed; a reference is kept so that they are not collected
-        await send({"type": "hello", "info": node_info()})
+        await send({"type": "hello", "info": await asyncio.to_thread(node_info, self.kube)})
         try:
             async for raw in ws:
                 msg = json.loads(raw)

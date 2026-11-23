@@ -29,6 +29,21 @@ metadata: {name: kaji-agent, namespace: kaji-agent}
 subjects: [{kind: ServiceAccount, name: kaji-agent, namespace: kaji-agent}]
 roleRef: {kind: Role, name: kaji-agent, apiGroup: rbac.authorization.k8s.io}
 ---
+# Read the nodes, only to tell the console which architectures and sizes this cluster can run, so that a task is not given to a builder it cannot fit.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: kaji-agent-kaji-agent-nodes}
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: kaji-agent-kaji-agent-nodes}
+subjects: [{kind: ServiceAccount, name: kaji-agent, namespace: kaji-agent}]
+roleRef: {kind: ClusterRole, name: kaji-agent-kaji-agent-nodes, apiGroup: rbac.authorization.k8s.io}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata: {name: kaji-agent, namespace: kaji-agent}
