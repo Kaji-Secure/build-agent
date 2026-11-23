@@ -12,6 +12,12 @@ LABEL = "kaji.systems/task"
 LOG_TAIL = 200  # lines of the worker's log sent with the result
 POLL_SECONDS = 5
 DRY_RUN_CPU = "100m"
+BINFMT_NAMES = {
+    "arm64": "arm64",
+    "arm": "arm",
+    "riscv": "riscv64",
+    "amd64": "amd64",
+}  # the emulator's name for an architecture
 log = logging.getLogger("kaji_agent")
 
 
@@ -20,14 +26,26 @@ def job_name(uid):
 
 
 def job_for(uid, payload, namespace):
+    name = job_name(uid)
     resources = {
         "requests": {"cpu": DRY_RUN_CPU if payload.get("dry_run") else str(payload["cpus"])},
         "limits": {"cpu": str(payload["cpus"])},
     }
     if payload.get("memory") and not payload.get("dry_run"):
         resources["requests"]["memory"] = resources["limits"]["memory"] = payload["memory"]
+    mounts, volumes = (
+        [{"name": "distfiles", "mountPath": "/var/cache/distfiles"}],
+        [{"name": "distfiles", "emptyDir": {}}],
+    )
+    if payload.get("tree_image"):  # the Portage tree, as the image it is kept in
+        mounts.append({"name": "tree", "mountPath": payload["tree_mount"], "readOnly": True})
+        volumes.append({"name": "tree", "image": {"reference": payload["tree_image"], "pullPolicy": "IfNotPresent"}})
+    if payload.get("config"):  # the Portage configuration, made a ConfigMap here (see extras_for)
+        mounts.append({"name": "config", "mountPath": "/wm/config", "readOnly": True})
+        volumes.append({"name": "config", "configMap": {"name": f"{name}-config"}})
     pod = {
         "restartPolicy": "Never",
+        "volumes": volumes,
         "containers": [
             {
                 "name": "worker",
@@ -35,21 +53,72 @@ def job_for(uid, payload, namespace):
                 "command": payload["command"],
                 "resources": resources,
                 "env": [{"name": k, "value": v} for k, v in payload.get("env", {}).items()],
+                "volumeMounts": mounts,
             }
         ],
     }
     if payload.get("arch"):
         pod["nodeSelector"] = {"kubernetes.io/arch": payload["arch"]}
+    if payload.get("pull_secret"):
+        pod["imagePullSecrets"] = [{"name": f"{name}-pull"}]
+    if payload.get("register_binfmt") and payload.get(
+        "arch"
+    ):  # node-wide and privileged, and only because the build asked for it
+        pod["initContainers"] = [
+            {
+                "name": "binfmt",
+                "image": payload["binfmt_image"],
+                "args": ["--install", BINFMT_NAMES.get(payload["arch"], payload["arch"])],
+                "securityContext": {"privileged": True},
+            }
+        ]
     return {
         "apiVersion": "batch/v1",
         "kind": "Job",
-        "metadata": {"name": job_name(uid), "namespace": namespace, "labels": {LABEL: uid}},
+        "metadata": {"name": name, "namespace": namespace, "labels": {LABEL: uid}},
         "spec": {
             "backoffLimit": 0,
             "ttlSecondsAfterFinished": 3600,
             "template": {"metadata": {"labels": {LABEL: uid}}, "spec": pod},
         },
     }
+
+
+def extras_for(uid, payload, namespace, job):
+    """The ConfigMap and the pull Secret the Job refers to, owned by it so that they go when it does."""
+    name = job["metadata"]["name"]
+    meta = {
+        "namespace": namespace,
+        "labels": {LABEL: uid},
+        "ownerReferences": [{"apiVersion": "batch/v1", "kind": "Job", "name": name, "uid": job["metadata"]["uid"]}],
+    }
+    out = []
+    if payload.get("config"):
+        out.append(
+            (
+                f"/api/v1/namespaces/{namespace}/configmaps",
+                {
+                    "apiVersion": "v1",
+                    "kind": "ConfigMap",
+                    "metadata": {"name": f"{name}-config", **meta},
+                    "data": payload["config"],
+                },
+            )
+        )
+    if payload.get("pull_secret"):
+        out.append(
+            (
+                f"/api/v1/namespaces/{namespace}/secrets",
+                {
+                    "apiVersion": "v1",
+                    "kind": "Secret",
+                    "type": "kubernetes.io/dockerconfigjson",
+                    "metadata": {"name": f"{name}-pull", **meta},
+                    "stringData": {".dockerconfigjson": payload["pull_secret"]},
+                },
+            )
+        )
+    return out
 
 
 def finished(job):
@@ -98,9 +167,13 @@ class Runner:
         self.active.add(uid)
         try:
             if await asyncio.to_thread(self.kube.request, "GET", f"{self._jobs()}/{job_name(uid)}") is None:
-                await asyncio.to_thread(
+                job = await asyncio.to_thread(
                     self.kube.request, "POST", self._jobs(), job_for(uid, payload, self.kube.namespace)
                 )
+                for path, obj in extras_for(
+                    uid, payload, self.kube.namespace, job
+                ):  # the Job first: they are owned by it
+                    await asyncio.to_thread(self.kube.request, "POST", path, obj)
             await self.send({"type": "status", "task": uid, "state": "running"})
             while not (
                 state := finished(
