@@ -49,6 +49,9 @@ def test_it_reports_the_architectures_and_the_biggest_node_of_its_cluster():
         Nodes([node("amd64", "3920m", "16Gi"), node("arm64", "8", "8388608Ki"), node("amd64", "2", "4Gi")])
     )
     assert info["arches"] == ["amd64", "arm64"] and info["cpus"] == 8 and info["memory"] == 16 * 1024**3
+    assert (
+        info["cluster_cpus"] == 3.92 + 8 + 2
+    )  # all the nodes together: the agent's Jobs go to whichever node the scheduler picks
 
 
 def test_it_reports_only_the_host_when_it_may_not_list_nodes():

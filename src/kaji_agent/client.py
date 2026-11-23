@@ -42,13 +42,16 @@ def quantity(text):
 
 
 def cluster_capacity(kube):
-    """What the cluster's nodes can run: their architectures and the size of the biggest one (a task is one pod on one node). Empty when the
-    agent may not list nodes: the server then goes by the host's architecture."""
+    """What the cluster's nodes can run: their architectures, the size of the biggest one (``cpus``, ``memory``: a task is one pod on one node) and
+    the CPUs of all of them together (``cluster_cpus``: what the agent could use if the user did not limit it). The agent is one per cluster and its
+    Jobs go to whichever node the scheduler picks, so all the nodes count. Empty when the agent may not list nodes: the server then goes by the
+    host's architecture."""
     try:
         nodes = (kube.request("GET", "/api/v1/nodes") or {}).get("items", [])
         return {
             "arches": sorted({n["status"]["nodeInfo"]["architecture"] for n in nodes}),
             "cpus": max(quantity(n["status"]["allocatable"]["cpu"]) for n in nodes),
+            "cluster_cpus": sum(quantity(n["status"]["allocatable"]["cpu"]) for n in nodes),
             "memory": max(quantity(n["status"]["allocatable"]["memory"]) for n in nodes),
         }
     except (OSError, KeyError, ValueError):
