@@ -13,6 +13,7 @@ import random
 import websockets
 
 from . import sysinfo
+from .sysinfo import schedulable  # noqa: F401  (what a node can take: see there)
 from .runner import Runner
 
 log = logging.getLogger("kaji_agent")
@@ -39,15 +40,6 @@ def quantity(text):
         if text.endswith(unit):
             return float(text[: -len(unit)]) * UNITS[unit]
     return float(text)
-
-
-def schedulable(node):
-    """Can a task's pod run on this node? Its Jobs tolerate no taint, so a node that is cordoned or has a NoSchedule or NoExecute taint (the control
-    plane of most clusters) never gets one, however big it is."""
-    spec = node.get("spec") or {}
-    return not spec.get("unschedulable") and not any(
-        t.get("effect") in ("NoSchedule", "NoExecute") for t in spec.get("taints") or []
-    )
 
 
 def cluster_capacity(kube):

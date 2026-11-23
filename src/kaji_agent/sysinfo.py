@@ -150,6 +150,15 @@ def quantity(text):
         return None
 
 
+def schedulable(node):
+    """Can a task's pod run on this node? Its Jobs tolerate no taint, so a node that is cordoned or has a NoSchedule or NoExecute taint (the control
+    plane of most clusters) never gets one, however big it is."""
+    spec = node.get("spec") or {}
+    return not spec.get("unschedulable") and not any(
+        t.get("effect") in ("NoSchedule", "NoExecute") for t in spec.get("taints") or []
+    )
+
+
 def nodes(kube):
     """The nodes of the cluster the agent runs in, or ``None`` if it may not list them. Only what a node says of itself: nothing about what runs on it."""
     try:
@@ -165,6 +174,7 @@ def nodes(kube):
         out.append(
             {
                 "name": (node.get("metadata") or {}).get("name", ""),
+                "schedulable": schedulable(node),  # a tainted control plane is listed, but takes no builds
                 "arch": info.get("architecture", ""),
                 "kubelet": info.get("kubeletVersion", ""),
                 "cpu": quantity(cap.get("cpu")),
