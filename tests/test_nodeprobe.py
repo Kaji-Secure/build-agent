@@ -67,15 +67,15 @@ def probe(kube, nodes, monkeypatch, **kw):
     return nodeprobe.cpu_models(kube, nodes, sleep=lambda s: None, **kw)
 
 
-def test_the_cpu_line_is_read_from_the_log_and_tidied():
-    assert nodeprobe.parse(X86) == "AMD EPYC 7763 64-Core Processor"
-    assert nodeprobe.parse("Hardware\t: Rockchip RK3588\n") == "Rockchip RK3588"
-    assert nodeprobe.parse("") == "" and nodeprobe.parse("processor\t: 0\n") == ""
+def test_the_cpu_is_read_from_the_log_and_tidied():
+    assert nodeprobe.parse(X86)["model"] == "AMD EPYC 7763 64-Core Processor"
+    assert nodeprobe.parse("Hardware\t: Rockchip RK3588\n")["model"] == "Rockchip RK3588"
+    assert nodeprobe.parse("") == {} and nodeprobe.parse("processor\t: 0\n") == {}  # no model, nothing to show
 
 
 def test_each_node_gets_a_job_on_it_that_reads_its_cpu_and_is_then_removed(monkeypatch):
     kube = Kube({"n1": X86, "n2": "model name\t: Intel Xeon\n"}, pull=[{"name": "regcred"}])
-    assert probe(kube, ["n1", "n2"], monkeypatch) == {"n1": "AMD EPYC 7763 64-Core Processor", "n2": "Intel Xeon"}
+    assert {n: i["model"] for n, i in probe(kube, ["n1", "n2"], monkeypatch).items()} == {"n1": "AMD EPYC 7763 64-Core Processor", "n2": "Intel Xeon"}
     posted = [c for c in kube.calls if c[0] == "POST"]
     assert len(posted) == 2
     deleted = [p for m, p in kube.calls if m == "DELETE"]
@@ -89,21 +89,21 @@ def test_the_job_is_pinned_to_its_node_runs_the_agents_own_image_with_its_pull_s
     pod = spec["spec"]["template"]["spec"]
     assert pod["nodeName"] == "n1" and pod["imagePullSecrets"] == [{"name": "regcred"}] and pod["restartPolicy"] == "Never"
     assert pod["containers"][0]["image"] == "ghcr.io/kaji-secure/kaji-agent:0.0.4"
-    assert pod["containers"][0]["command"][-1].startswith("grep -m1") and "/proc/cpuinfo" in pod["containers"][0]["command"][-1]
+    assert "/proc/cpuinfo" in pod["containers"][0]["command"][-1] and "/sys/class/dmi/id/product_name" in pod["containers"][0]["command"][-1]
     assert pod["containers"][0]["resources"]["requests"]["cpu"] == "10m" and spec["spec"]["backoffLimit"] == 0
     assert spec["spec"]["ttlSecondsAfterFinished"] and runner.LABEL not in spec["metadata"]["labels"]  # not followed as a task after a restart
 
 
 def test_a_node_whose_job_cannot_be_made_stays_unknown_and_the_others_answer(monkeypatch):
     kube = Kube({"n1": X86, "n2": X86}, fail_create=["n1"])
-    assert probe(kube, ["n1", "n2"], monkeypatch) == {"n2": "AMD EPYC 7763 64-Core Processor"}
+    assert list(probe(kube, ["n1", "n2"], monkeypatch)) == ["n2"]
 
 
 def test_a_node_that_does_not_answer_in_time_is_left_out_and_its_job_is_removed(monkeypatch):
     kube = Kube({"n1": X86, "n2": X86}, never=["n2"])
     clock = iter(range(0, 1000, 40))
     result = probe(kube, ["n1", "n2"], monkeypatch, deadline=90, now=lambda: next(clock))
-    assert result == {"n1": "AMD EPYC 7763 64-Core Processor"} and kube.jobs == {}
+    assert list(result) == ["n1"] and kube.jobs == {}
 
 
 def test_without_the_agents_own_pod_nothing_is_probed(monkeypatch):
@@ -125,14 +125,15 @@ def test_the_models_are_put_on_the_nodes_in_the_report(monkeypatch):
         def request(self, method, path, body=None, raw=False):
             return {"items": [{"metadata": {"name": "n1"}, "status": {"nodeInfo": {"architecture": "amd64"}, "capacity": {"cpu": "4"}, "allocatable": {"cpu": "4"}}}]}
 
-    out = sysinfo.collect(Nodes(), cpu_models={"n1": "AMD EPYC"})
+    out = sysinfo.collect(Nodes(), cpu_models={"n1": {"model": "AMD EPYC", "codename": "Milan (Zen 3)", "mhz": 2445.4}})
     assert out["nodes"][0]["name"] == "n1" and out["nodes"][0]["cpu_model"] == "AMD EPYC"
+    assert out["nodes"][0]["cpu_info"] == {"model": "AMD EPYC", "codename": "Milan (Zen 3)", "mhz": 2445.4}
     assert "cpu_model" not in sysinfo.collect(Nodes())["nodes"][0]
 
 
 async def test_when_asked_the_agent_answers_at_once_and_again_with_the_cpus_when_the_probes_are_done(monkeypatch):
-    monkeypatch.setattr(sysinfo, "collect", lambda kube, cpu_models=None, **kw: {"nodes": [{"name": "n1", **({"cpu_model": cpu_models["n1"]} if cpu_models else {})}]})
-    monkeypatch.setattr(nodeprobe, "cpu_models", lambda kube, names: {"n1": "AMD EPYC"})
+    monkeypatch.setattr(sysinfo, "collect", lambda kube, cpu_models=None, **kw: {"nodes": [{"name": "n1", **({"cpu_model": cpu_models["n1"]["model"]} if cpu_models else {})}]})
+    monkeypatch.setattr(nodeprobe, "cpu_models", lambda kube, names: {"n1": {"model": "AMD EPYC"}})
     got = []
 
     async def gateway(ws):

@@ -1,8 +1,8 @@
 """What CPU each node of the cluster has.
 
 A Kubernetes Node does not say: its object holds the architecture and the capacity, no CPU model, and the agent's own pod sees only the one node it
-runs on. So when the console asks what the cluster is (never on a timer), the agent runs a short Job on each node that reads ``/proc/cpuinfo`` and
-reads the answer from its log. The Job runs the agent's own image (found from the agent's own pod, with its pull secrets), is pinned to its node
+runs on. So when the console asks what the cluster is (never on a timer), the agent runs a short Job on each node that reads ``/proc/cpuinfo`` and ``/sys``
+(the model, family, speed, cache, cores, instruction sets, whether it is a VM: cpuinfo.py) and reads the answer from its log. The Job runs the agent's own image (found from the agent's own pod, with its pull secrets), is pinned to its node
 (``nodeName``), asks for next to nothing, and is removed as soon as its answer is read (``ttlSecondsAfterFinished`` as a safety net). It needs the
 Role's ``create`` and ``delete`` on jobs and ``list`` on pods and their logs, which the agent has. Whatever goes wrong leaves that node's CPU unknown."""
 
@@ -11,11 +11,22 @@ import logging
 import platform
 import time
 
+from . import cpuinfo
+
 log = logging.getLogger("kaji_agent")
 
 PROBE_LABEL = "kaji.dev/probe"  # not the task label: a restarted agent follows the Jobs that carry that one (runner.LABEL)
-KEYS = ("model name", "Model name", "Hardware", "cpu model")
-COMMAND = ["sh", "-c", "grep -m1 -E '^(" + "|".join(KEYS) + ")' /proc/cpuinfo || true"]
+# The first CPU's block of cpuinfo, then what is not in it: how many CPUs and cores, the highest clock cpufreq knows, and what the DMI says the machine is.
+SCRIPT = (
+    "sed '/^$/q' /proc/cpuinfo; "
+    "echo \"processors: $(grep -c '^processor' /proc/cpuinfo)\"; "
+    "echo \"cores: $(grep -E '^(physical id|core id)' /proc/cpuinfo | paste - - | sort -u | wc -l)\"; "
+    "echo \"max_khz: $(cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq 2>/dev/null)\"; "
+    "echo \"dmi_vendor: $(cat /sys/class/dmi/id/sys_vendor 2>/dev/null)\"; "
+    "echo \"dmi_product: $(cat /sys/class/dmi/id/product_name 2>/dev/null)\"; "
+    "true"
+)
+COMMAND = ["sh", "-c", SCRIPT]
 DEADLINE = 90  # seconds, for all the nodes together: a node that has to pull the image first may need most of it
 POLL = 2
 
@@ -69,16 +80,13 @@ def probe_job(kube, node, image, pull_secrets):
 
 
 def parse(log_text):
-    """The CPU model from the line ``model name<TAB>: AMD EPYC ...`` that was read, tidied (spaces), or ``""``."""
-    for line in (log_text or "").splitlines():
-        key, _, value = line.partition(":")
-        if key.strip() in KEYS and value.strip():
-            return " ".join(value.split())
-    return ""
+    """The CPU as a dict from the probe's log (``cpuinfo.parse``), or ``{}`` if it says no model."""
+    info = cpuinfo.parse(log_text)
+    return info if info.get("model") else {}
 
 
 def cpu_models(kube, nodes, deadline=DEADLINE, poll=POLL, now=time.monotonic, sleep=time.sleep):
-    """``{node name: CPU model}`` for the nodes that answered in time. Blocking: the agent calls it in a thread."""
+    """``{node name: CPU (a dict: model, codename, speed, cores ...)}`` for the nodes that answered in time. Blocking: the agent calls it in a thread."""
     found = own_pod(kube) if nodes else None
     if found is None:
         return {}

@@ -194,7 +194,7 @@ def nodes(kube):
 
 def collect(kube=None, proc="/proc", path="/", cpu_models=None):
     """Everything, as the message to kaji: the machine the agent is on, and, if it may, the nodes of its cluster. ``cpu_models`` is what the probes
-    of the nodes found (``nodeprobe.cpu_models``): each node that answered has its CPU model."""
+    of the nodes found (``nodeprobe.cpu_models``): each node that answered has its CPU (``cpu_info``, and its model name as ``cpu_model``)."""
     model, cores = cpu(proc)
     total, available = memory(proc)
     disk_total, disk_free = disk(path)
@@ -214,7 +214,8 @@ def collect(kube=None, proc="/proc", path="/", cpu_models=None):
         pass
     if kube is not None and (listed := nodes(kube)) is not None:
         for node in listed:
-            if model := (cpu_models or {}).get(node.get("name")):
-                node["cpu_model"] = model
+            if info := (cpu_models or {}).get(node.get("name")):
+                node["cpu_model"] = info.get("model", "")
+                node["cpu_info"] = info
         out["nodes"] = listed
     return {k: v for k, v in out.items() if v not in (None, "")}
