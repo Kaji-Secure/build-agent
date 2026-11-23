@@ -12,6 +12,7 @@ import random
 
 import websockets
 
+from . import sysinfo
 from .runner import Runner
 
 log = logging.getLogger("kaji_agent")
@@ -42,6 +43,8 @@ class Agent:
                     if runner:
                         running.add(task := asyncio.create_task(runner.run(msg["task"], msg["payload"])))
                         task.add_done_callback(running.discard)
+                elif msg.get("type") == "inspect":  # asked for, from the console: what the machine is, now
+                    await send({"type": "hardware", "hardware": await asyncio.to_thread(sysinfo.collect, self.kube)})
                 elif msg.get("type") == "welcome":
                     log.info("connected to %s", self.url)
                     if runner:
