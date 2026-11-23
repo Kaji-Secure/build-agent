@@ -87,7 +87,6 @@ def test_the_nodes_of_the_cluster_say_what_they_are():
     (node,) = sysinfo.nodes(Kube({"items": [NODE]}))
     assert node == {
         "name": "n1",
-        "schedulable": True,
         "arch": "arm64",
         "kubelet": "v1.33.1",
         "cpu": 8.0,
@@ -214,7 +213,7 @@ def test_without_a_limit_or_a_declaration_there_is_no_budget(tmp_path):
     assert sysinfo.cpu_budget({}, str(tmp_path), str(tmp_path)) == (None, "")
 
 
-def test_the_nodes_list_says_which_ones_take_builds():
+def test_the_nodes_list_leaves_out_the_ones_that_take_no_builds():
     class Kube:
         def request(self, method, path):
             plane = {
@@ -230,4 +229,4 @@ def test_the_nodes_list_says_which_ones_take_builds():
             return {"items": [plane, worker]}
 
     listed = sysinfo.nodes(Kube())
-    assert [(n["name"], n["schedulable"]) for n in listed] == [("cp", False), ("w1", True)]
+    assert [n["name"] for n in listed] == ["w1"]

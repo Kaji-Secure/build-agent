@@ -160,7 +160,8 @@ def schedulable(node):
 
 
 def nodes(kube):
-    """The nodes of the cluster the agent runs in, or ``None`` if it may not list them. Only what a node says of itself: nothing about what runs on it."""
+    """The nodes of the cluster the agent runs in that can take a build (a control plane or a cordoned node is left out), or ``None`` if it may
+    not list them. Only what a node says of itself: nothing about what runs on it."""
     try:
         listed = (kube.request("GET", "/api/v1/nodes") or {}).get("items", [])
     except KubeError as err:
@@ -168,13 +169,12 @@ def nodes(kube):
             return None
         raise
     out = []
-    for node in listed[:MAX_NODES]:
+    for node in [n for n in listed if schedulable(n)][:MAX_NODES]:
         status, info = node.get("status") or {}, (node.get("status") or {}).get("nodeInfo") or {}
         cap, alloc = status.get("capacity") or {}, status.get("allocatable") or {}
         out.append(
             {
                 "name": (node.get("metadata") or {}).get("name", ""),
-                "schedulable": schedulable(node),  # a tainted control plane is listed, but takes no builds
                 "arch": info.get("architecture", ""),
                 "kubelet": info.get("kubeletVersion", ""),
                 "cpu": quantity(cap.get("cpu")),
