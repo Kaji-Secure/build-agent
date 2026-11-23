@@ -138,10 +138,27 @@ def test_a_role_that_is_not_built_yet_stops_the_agent_with_a_message(monkeypatch
     import pytest
     from kaji_agent import __main__ as entry
 
-    monkeypatch.setattr("sys.argv", ["kaji-agent", "--token", "kb_x", "--role", "host"])
+    monkeypatch.setattr(
+        "sys.argv", ["kaji-agent", "--token", "kb_x", "--role", "cluster"]
+    )
     with pytest.raises(SystemExit):
         entry.main()
-    assert "the host role is not built yet" in capsys.readouterr().err
+    assert "the cluster role is not built yet" in capsys.readouterr().err
+
+
+def test_a_host_agent_needs_no_cluster_and_a_report_interval_under_a_minute_is_refused(
+    monkeypatch, capsys
+):
+    import pytest
+    from kaji_agent import __main__ as entry
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["kaji-agent", "--token", "kb_x", "--role", "host", "--interval", "5"],
+    )
+    with pytest.raises(SystemExit):
+        entry.main()
+    assert "at least 60 seconds" in capsys.readouterr().err
 
 
 def test_a_node_the_user_switched_off_is_not_counted_in_the_clusters_capacity():

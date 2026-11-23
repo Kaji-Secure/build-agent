@@ -12,7 +12,7 @@ import random
 
 import websockets
 
-from . import sysinfo
+from . import hostinfo, sysinfo
 from .sysinfo import schedulable  # noqa: F401  (what a node can take: see there)
 from .runner import Runner
 
@@ -60,7 +60,11 @@ def cluster_capacity(kube):
 
 
 ROLES = ("builder", "host", "cluster")  # what an agent does; the gateway holds it to the role its token was made for
-BUILT = ("builder",)  # the roles this version can run (host and cluster: ROADMAP 11 in the kaji repository)
+BUILT = (
+    "builder",
+    "host",
+)  # the roles this version can run (cluster: ROADMAP 11 in the kaji repository)
+REPORT_EVERY = 6 * 3600  # seconds between a host's reports; KAJI_REPORT_INTERVAL
 
 
 def node_info(kube=None, role="builder"):
@@ -80,15 +84,33 @@ def node_info(kube=None, role="builder"):
 
 
 class Agent:
-    def __init__(self, url, token, kube=None, role="builder"):
-        self.url, self.token, self.role = url, token, role
+    def __init__(self, url, token, kube=None, role="builder", interval=REPORT_EVERY):
+        self.url, self.token, self.role, self.interval = url, token, role, interval
         self.kube = kube  # the cluster the tasks run in; without one the agent only acknowledges them
 
     async def session(self, ws):
         async def send(message):
             await ws.send(json.dumps(message))
 
-        runner = Runner(self.kube, send) if self.kube else None
+        runner = (
+            Runner(self.kube, send) if self.kube and self.role == "builder" else None
+        )
+
+        async def report():  # a host says what it is and what is installed: read off the event loop, it walks the package database
+            await send(
+                {
+                    "type": "report",
+                    "kind": "host",
+                    "report": await asyncio.to_thread(hostinfo.report),
+                }
+            )
+
+        async def every():
+            while True:
+                await report()
+                await asyncio.sleep(self.interval)
+
+        reporting = None
         running = set()  # the tasks being followed; a reference is kept so that they are not collected
         await send({"type": "hello", "info": await asyncio.to_thread(node_info, self.kube, self.role)})
         try:
@@ -99,6 +121,10 @@ class Agent:
                     if runner:
                         running.add(task := asyncio.create_task(runner.run(msg["task"], msg["payload"])))
                         task.add_done_callback(running.discard)
+                elif (
+                    msg.get("type") == "inspect" and self.role == "host"
+                ):  # asked for, from the console: everything, now
+                    await report()
                 elif msg.get("type") == "inspect":  # asked for, from the console: what the machine is, now
                     await send({"type": "hardware", "hardware": await asyncio.to_thread(sysinfo.collect, self.kube)})
                 elif (
@@ -109,7 +135,13 @@ class Agent:
                     log.info("connected to %s", self.url)
                     if runner:
                         running.update(await runner.resume())
+                    if self.role == "host" and reporting is None:
+                        reporting = asyncio.create_task(
+                            every()
+                        )  # at once, then on the timer
         finally:
+            if reporting:
+                reporting.cancel()
             for task in running:
                 task.cancel()  # the Jobs go on in the cluster; the next session picks them up again
 
