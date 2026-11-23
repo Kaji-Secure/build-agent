@@ -41,13 +41,22 @@ def quantity(text):
     return float(text)
 
 
+def schedulable(node):
+    """Can a task's pod run on this node? Its Jobs tolerate no taint, so a node that is cordoned or has a NoSchedule or NoExecute taint (the control
+    plane of most clusters) never gets one, however big it is."""
+    spec = node.get("spec") or {}
+    return not spec.get("unschedulable") and not any(
+        t.get("effect") in ("NoSchedule", "NoExecute") for t in spec.get("taints") or []
+    )
+
+
 def cluster_capacity(kube):
     """What the cluster's nodes can run: their architectures, the size of the biggest one (``cpus``, ``memory``: a task is one pod on one node) and
     the CPUs of all of them together (``cluster_cpus``: what the agent could use if the user did not limit it). The agent is one per cluster and its
-    Jobs go to whichever node the scheduler picks, so all the nodes count. Empty when the agent may not list nodes: the server then goes by the
-    host's architecture."""
+    Jobs go to whichever node the scheduler picks, so the nodes that can take a pod count, and a tainted control plane does not. Empty when the agent
+    may not list nodes: the server then goes by the host's architecture."""
     try:
-        nodes = (kube.request("GET", "/api/v1/nodes") or {}).get("items", [])
+        nodes = [n for n in (kube.request("GET", "/api/v1/nodes") or {}).get("items", []) if schedulable(n)]
         return {
             "arches": sorted({n["status"]["nodeInfo"]["architecture"] for n in nodes}),
             "cpus": max(quantity(n["status"]["allocatable"]["cpu"]) for n in nodes),

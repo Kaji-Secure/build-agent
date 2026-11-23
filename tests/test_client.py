@@ -54,6 +54,24 @@ def test_it_reports_the_architectures_and_the_biggest_node_of_its_cluster():
     )  # all the nodes together: the agent's Jobs go to whichever node the scheduler picks
 
 
+def test_a_tainted_or_cordoned_node_does_not_count_for_what_the_cluster_can_run():
+    from kaji_agent.client import node_info
+
+    plane = {
+        **node("arm64", "16", "64Gi"),
+        "spec": {"taints": [{"key": "node-role.kubernetes.io/control-plane", "effect": "NoSchedule"}]},
+    }
+    cordoned = {**node("amd64", "12", "32Gi"), "spec": {"unschedulable": True}}
+    prefer = {**node("amd64", "4", "8Gi"), "spec": {"taints": [{"key": "x", "effect": "PreferNoSchedule"}]}}
+    info = node_info(Nodes([plane, cordoned, prefer, node("amd64", "4", "8Gi")]))
+    assert (
+        info["arches"] == ["amd64"]
+        and info["cpus"] == 4
+        and info["cluster_cpus"] == 8
+        and info["memory"] == 8 * 1024**3
+    )
+
+
 def test_it_reports_only_the_host_when_it_may_not_list_nodes():
     from kaji_agent.client import node_info
 
