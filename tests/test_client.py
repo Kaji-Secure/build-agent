@@ -195,3 +195,54 @@ async def test_a_task_kaji_drops_has_its_job_removed():
         await Agent(url, "kb_x", kube=kube).session(ws)
     server.close()
     assert any(m == "DELETE" and "/jobs/" in p and "propagationPolicy=Background" in p for m, p in kube.calls)
+
+
+# ---------------------------------------------------------------- the version, and a Job that cannot be removed
+
+def test_the_hello_carries_the_agents_version(monkeypatch):
+    from kaji_agent import client
+
+    monkeypatch.setenv("KAJI_AGENT_VERSION", "0.0.4")
+    assert client.node_info()["version"] == "0.0.4"
+
+
+def test_a_checkout_that_was_not_stamped_says_unknown(monkeypatch):
+    from kaji_agent import version
+
+    monkeypatch.delenv("KAJI_AGENT_VERSION", raising=False)
+    monkeypatch.setattr(version, "STAMPED", "")
+    assert version.agent_version() == "unknown"
+    monkeypatch.setattr(version, "STAMPED", "1.2.3")
+    assert version.agent_version() == "1.2.3"  # what the release build wrote
+    monkeypatch.setenv("KAJI_AGENT_VERSION", "9.9.9")
+    assert version.agent_version() == "9.9.9"  # an override wins
+
+
+async def test_a_job_that_cannot_be_removed_is_logged_and_the_connection_goes_on(caplog):
+    import asyncio
+
+    from kaji_agent.kube import KubeError
+
+    class Kube:
+        namespace = "kaji"
+
+        def request(self, method, path, body=None, raw=False):
+            if method == "DELETE":
+                raise KubeError(403, "jobs.batch is forbidden: cannot delete")
+            return {"items": []}
+
+    seen = []
+
+    async def gateway(ws):
+        await ws.recv()
+        await ws.send(json.dumps({"type": "cancel", "task": "0b7a3c9e-1111-2222-3333-444455556666"}))
+        await ws.send(json.dumps({"type": "task", "task": "t2", "payload": {}}))
+        seen.append(json.loads(await ws.recv()))  # still answering: the refused delete did not end the session
+        await ws.close()
+
+    server, url = await serve(gateway)
+    with caplog.at_level("WARNING", logger="kaji_agent"):
+        async with websockets.connect(url, additional_headers={"Authorization": "Bearer kb_x"}) as ws:
+            await Agent(url, "kb_x", kube=Kube()).session(ws)
+    server.close()
+    assert seen == [{"type": "ack", "task": "t2"}] and "could not remove the Job" in caplog.text and "forbidden" in caplog.text

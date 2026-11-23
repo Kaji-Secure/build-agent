@@ -20,10 +20,12 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with: {fetch-depth: 0}  # setuptools-scm reads the version from the tags
       - name: Build (Nuitka compiles the agent, so this takes a few minutes)
         # The build stage of the image's Dockerfile has the binary at /out/kaji-agent: take it out of there, so the file and the image are one build.
         run: |
-          docker build --target build -t kaji-agent-build .
+          scm="$(pip install -q setuptools-scm && python -m setuptools_scm)"; echo "agent version: $scm"
+          docker build --target build --build-arg VERSION="$scm" -t kaji-agent-build .
           docker create --name out kaji-agent-build
           mkdir dist-out
           docker cp out:/out/kaji-agent "dist-out/kaji-agent-linux-${{ matrix.arch }}"

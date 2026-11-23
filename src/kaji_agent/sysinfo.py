@@ -192,8 +192,9 @@ def nodes(kube):
     return out
 
 
-def collect(kube=None, proc="/proc", path="/"):
-    """Everything, as the message to kaji: the machine the agent is on, and, if it may, the nodes of its cluster."""
+def collect(kube=None, proc="/proc", path="/", cpu_models=None):
+    """Everything, as the message to kaji: the machine the agent is on, and, if it may, the nodes of its cluster. ``cpu_models`` is what the probes
+    of the nodes found (``nodeprobe.cpu_models``): each node that answered has its CPU model."""
     model, cores = cpu(proc)
     total, available = memory(proc)
     disk_total, disk_free = disk(path)
@@ -212,5 +213,8 @@ def collect(kube=None, proc="/proc", path="/"):
     except AttributeError:
         pass
     if kube is not None and (listed := nodes(kube)) is not None:
+        for node in listed:
+            if model := (cpu_models or {}).get(node.get("name")):
+                node["cpu_model"] = model
         out["nodes"] = listed
     return {k: v for k, v in out.items() if v not in (None, "")}

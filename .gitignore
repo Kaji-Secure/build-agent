@@ -1,3 +1,10 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# written by the release build (Dockerfile): the version in the hello
+src/kaji_agent/_version.py
+
+# build output
+build/
+*.egg-info/

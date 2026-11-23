@@ -12,7 +12,7 @@ metadata: {name: kaji-agent, namespace: kaji-agent}
 rules:
 - apiGroups: ["batch"]
   resources: ["jobs"]
-  verbs: ["get", "list", "create"]
+  verbs: ["get", "list", "create", "delete"]  # delete: a task kaji dropped (cancel): its pods, ConfigMap and Secrets are owned by the Job and go with it
 - apiGroups: [""]
   resources: ["configmaps", "secrets"]   # a task's Portage configuration and image pull login: made with the Job, owned by it, removed with it
   verbs: ["create"]

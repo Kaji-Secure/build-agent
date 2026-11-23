@@ -14,6 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with: {fetch-depth: 0}  # setuptools-scm reads the version from the tags
       - name: Log in to ghcr.io
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       - name: Build (Nuitka compiles the agent, so this takes a few minutes)
@@ -21,7 +22,8 @@ jobs:
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/kaji-agent"
           if [ "${GITHUB_REF_TYPE}" = tag ]; then version="${GITHUB_REF_NAME#v}"; else version=dev; fi
-          docker build -t "$image:$version" .
+          scm="$(pip install -q setuptools-scm && python -m setuptools_scm)"; echo "agent version: $scm"
+          docker build --build-arg VERSION="$scm" -t "$image:$version" .
           echo "image=$image" >> "$GITHUB_ENV"
           echo "version=$version" >> "$GITHUB_ENV"
       - name: Push

@@ -12,9 +12,11 @@ import random
 
 import websockets
 
-from . import hostinfo, sysinfo
+from . import hostinfo, nodeprobe, sysinfo
+from .kube import KubeError
 from .sysinfo import schedulable  # noqa: F401  (what a node can take: see there)
 from .runner import Runner
+from .version import agent_version
 
 log = logging.getLogger("kaji_agent")
 BACKOFF_MAX = 60
@@ -70,10 +72,11 @@ REPORT_EVERY = 6 * 3600  # seconds between a host's reports; KAJI_REPORT_INTERVA
 def node_info(kube=None, role="builder"):
     """What the agent says in its hello. ``role`` is what it does. ``cpus`` is the biggest node's logical CPUs (to know whether a task fits); ``threads_per_core`` turns CPUs
     into cores; ``cpu_budget`` is the cores the user gave kaji, if they said (``KAJI_CPUS``, or the container's CPU limit): the gateway counts it
-    against the plan and never gives this agent more work than it."""
+    against the plan and never gives this agent more work than it. ``version`` is this agent's release, so that the console can show which are old."""
     budget, source = sysinfo.cpu_budget()
     return {
         "role": role,
+        "version": agent_version(),
         "hostname": platform.node(),
         "arch": platform.machine(),
         "system": platform.system(),
@@ -112,6 +115,13 @@ class Agent:
 
         reporting = None
         running = set()  # the tasks being followed; a reference is kept so that they are not collected
+        probing = []  # the probe of the nodes' CPUs that is running, if one is: the console asking again meanwhile does not start another
+
+        async def report_cpus(names):
+            models = await asyncio.to_thread(nodeprobe.cpu_models, self.kube, names)
+            if models:
+                await send({"type": "hardware", "hardware": await asyncio.to_thread(sysinfo.collect, self.kube, cpu_models=models)})
+
         await send({"type": "hello", "info": await asyncio.to_thread(node_info, self.kube, self.role)})
         try:
             async for raw in ws:
@@ -127,9 +137,18 @@ class Agent:
                     await report()
                 elif msg.get("type") == "cancel":  # the task is dropped: take its Job away (a Job that is gone is fine)
                     if runner:
-                        await runner.cancel(msg["task"])
+                        try:
+                            await runner.cancel(msg["task"])
+                        except KubeError as err:  # say so (it was silent): usually the Role has no "delete" on jobs, as the charts before 0.0.4 did not
+                            log.warning("could not remove the Job of task %s: %s", msg["task"], err)
                 elif msg.get("type") == "inspect":  # asked for, from the console: what the machine is, now
-                    await send({"type": "hardware", "hardware": await asyncio.to_thread(sysinfo.collect, self.kube)})
+                    hardware = await asyncio.to_thread(sysinfo.collect, self.kube)
+                    await send({"type": "hardware", "hardware": hardware})
+                    names = [n["name"] for n in hardware.get("nodes") or [] if n.get("name")]
+                    if self.kube and names and not probing:  # then, as the answers come, the CPU of each node (a Job on it, which takes a while)
+                        probing.append(task := asyncio.create_task(report_cpus(names)))
+                        running.add(task)
+                        task.add_done_callback(lambda t: (probing.remove(t), running.discard(t)))
                 elif (
                     msg.get("type") == "refused"
                 ):  # not allowed on this plan: fail, and say why, instead of retrying for ever
