@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kaji-agent"
+version = "0.1.0"
+description = "The kaji builder agent: runs on your own nodes and does the build work kaji sends it"
+requires-python = ">=3.10"
+dependencies = ["websockets>=13"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
+
+[project.scripts]
+kaji-agent = "kaji_agent.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
