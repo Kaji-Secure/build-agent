@@ -237,3 +237,10 @@ def test_a_node_that_is_not_ready_takes_no_builds():
     assert not sysinfo.schedulable({"status": {"conditions": [{"type": "Ready", "status": "False"}]}})
     assert not sysinfo.schedulable({"status": {"conditions": [{"type": "Ready", "status": "Unknown"}]}})
     assert sysinfo.schedulable({})
+
+
+def test_a_node_labelled_kaji_nobuilder_takes_no_builds_and_is_not_counted():
+    plain = {"metadata": {"name": "a", "labels": {}}, "spec": {}}
+    off = {"metadata": {"name": "b", "labels": {"kaji": "NoBuilder"}}, "spec": {}}
+    other = {"metadata": {"name": "c", "labels": {"kaji": "something-else"}}, "spec": {}}
+    assert sysinfo.schedulable(plain) and sysinfo.schedulable(other) and not sysinfo.schedulable(off)

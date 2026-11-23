@@ -274,3 +274,23 @@ async def test_the_log_a_runner_reports_has_no_token():
 
     out = await sent(Leaky())
     assert token not in json.dumps(out) and "kt1.***" in out[-1]["result"]["log"]
+
+
+# ---------------------------------------------------------------- a node the user switched off
+
+NO_BUILDER = {"key": "kaji", "operator": "NotIn", "values": ["NoBuilder"]}
+
+
+def affinity_terms(pod):
+    return pod["affinity"]["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]["nodeSelectorTerms"]
+
+
+def test_a_task_pod_keeps_off_the_nodes_labelled_kaji_nobuilder():
+    pod = job_for(UID, PAYLOAD, "kaji")["spec"]["template"]["spec"]
+    assert affinity_terms(pod) == [{"matchExpressions": [NO_BUILDER]}]
+
+
+def test_a_generic_task_pod_keeps_off_them_too():
+    payload = {**PAYLOAD, "volumes": [], "resources": {"requests": {"cpu": "1"}, "limits": {"cpu": "1"}}}
+    pod = job_for(UID, payload, "kaji")["spec"]["template"]["spec"]
+    assert affinity_terms(pod) == [{"matchExpressions": [NO_BUILDER]}]

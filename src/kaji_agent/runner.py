@@ -9,6 +9,18 @@ import json
 import logging
 import re
 
+# A node the user labelled ``kaji: NoBuilder`` gets none of this agent's pods (nodes without the label are fine); the operator does the same.
+NO_BUILDER_NODES = {
+    "affinity": {
+        "nodeAffinity": {
+            "requiredDuringSchedulingIgnoredDuringExecution": {
+                "nodeSelectorTerms": [{"matchExpressions": [{"key": "kaji", "operator": "NotIn", "values": ["NoBuilder"]}]}]
+            }
+        }
+    }
+}
+
+
 LABEL = "kaji.systems/task"
 LOG_TAIL = 200  # lines of the worker's log sent with the result
 POLL_SECONDS = 5
@@ -77,7 +89,7 @@ def generic_pod(name, payload):
     }
     if payload.get("rootless"):
         container["securityContext"] = ROOTLESS
-    return {"restartPolicy": "Never", "volumes": volumes, "containers": [container]}
+    return {"restartPolicy": "Never", **NO_BUILDER_NODES, "volumes": volumes, "containers": [container]}
 
 
 def job_for(uid, payload, namespace):
@@ -102,7 +114,7 @@ def job_for(uid, payload, namespace):
         mounts.append({"name": "config", "mountPath": "/wm/config", "readOnly": True})
         volumes.append({"name": "config", "configMap": {"name": f"{name}-config"}})
     pod = {
-        "restartPolicy": "Never",
+        "restartPolicy": "Never", **NO_BUILDER_NODES,
         "volumes": volumes,
         "containers": [
             {

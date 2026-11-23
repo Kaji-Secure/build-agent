@@ -142,3 +142,11 @@ def test_a_role_that_is_not_built_yet_stops_the_agent_with_a_message(monkeypatch
     with pytest.raises(SystemExit):
         entry.main()
     assert "the host role is not built yet" in capsys.readouterr().err
+
+
+def test_a_node_the_user_switched_off_is_not_counted_in_the_clusters_capacity():
+    from kaji_agent.client import node_info
+
+    off = {**node("amd64", "16", "64Gi"), "metadata": {"labels": {"kaji": "NoBuilder"}}}
+    info = node_info(Nodes([node("amd64", "4", "8Gi"), off]))
+    assert info["cpus"] == 4 and info["cluster_cpus"] == 4
