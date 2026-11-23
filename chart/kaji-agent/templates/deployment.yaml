@@ -27,6 +27,7 @@ spec:
           env:
             - {name: KAJI_URL, value: {{ .Values.url | quote }}}
             - {name: KAJI_TOKEN, valueFrom: {secretKeyRef: {name: {{ include "kaji-agent.secret" . }}, key: token}}}
+            - {name: KAJI_ROLE, value: {{ .Values.role | default "builder" | quote }}}
             {{- if .Values.cpus }}
             - {name: KAJI_CPUS, value: {{ .Values.cpus | quote }}}
             {{- end }}

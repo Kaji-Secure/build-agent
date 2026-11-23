@@ -20,3 +20,7 @@ tolerations: []
 # its agents together; an agent that would go past that is refused and fails. Empty: the container's CPU limit (resources.limits.cpu, which is in
 # CPUs, so it is divided by the threads per core), and without one the biggest node of the cluster.
 cpus: ""
+
+# What this agent does: builder (runs your builds; the only role built so far), host or cluster. It must be what its token was made for in the
+# console (Organization > Agents), or the gateway refuses it.
+role: builder

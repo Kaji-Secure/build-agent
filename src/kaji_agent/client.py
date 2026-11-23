@@ -59,12 +59,17 @@ def cluster_capacity(kube):
         return {}
 
 
-def node_info(kube=None):
-    """What the agent says in its hello. ``cpus`` is the biggest node's logical CPUs (to know whether a task fits); ``threads_per_core`` turns CPUs
+ROLES = ("builder", "host", "cluster")  # what an agent does; the gateway holds it to the role its token was made for
+BUILT = ("builder",)  # the roles this version can run (host and cluster: ROADMAP 11 in the kaji repository)
+
+
+def node_info(kube=None, role="builder"):
+    """What the agent says in its hello. ``role`` is what it does. ``cpus`` is the biggest node's logical CPUs (to know whether a task fits); ``threads_per_core`` turns CPUs
     into cores; ``cpu_budget`` is the cores the user gave kaji, if they said (``KAJI_CPUS``, or the container's CPU limit): the gateway counts it
     against the plan and never gives this agent more work than it."""
     budget, source = sysinfo.cpu_budget()
     return {
+        "role": role,
         "hostname": platform.node(),
         "arch": platform.machine(),
         "system": platform.system(),
@@ -75,8 +80,8 @@ def node_info(kube=None):
 
 
 class Agent:
-    def __init__(self, url, token, kube=None):
-        self.url, self.token = url, token
+    def __init__(self, url, token, kube=None, role="builder"):
+        self.url, self.token, self.role = url, token, role
         self.kube = kube  # the cluster the tasks run in; without one the agent only acknowledges them
 
     async def session(self, ws):
@@ -85,7 +90,7 @@ class Agent:
 
         runner = Runner(self.kube, send) if self.kube else None
         running = set()  # the tasks being followed; a reference is kept so that they are not collected
-        await send({"type": "hello", "info": await asyncio.to_thread(node_info, self.kube)})
+        await send({"type": "hello", "info": await asyncio.to_thread(node_info, self.kube, self.role)})
         try:
             async for raw in ws:
                 msg = json.loads(raw)

@@ -107,3 +107,38 @@ def test_the_hello_carries_the_threads_per_core_and_the_budget(monkeypatch):
     monkeypatch.setenv("KAJI_CPUS", "12")
     info = client.node_info()
     assert info["cpu_budget"] == 12.0 and info["cpu_budget_from"] == "KAJI_CPUS" and info["threads_per_core"] >= 1
+
+
+def test_the_hello_says_the_role():
+    from kaji_agent.client import node_info
+
+    assert node_info()["role"] == "builder" and node_info(role="host")["role"] == "host"
+
+
+def test_the_agent_says_its_role_in_its_hello():
+    import asyncio
+
+    seen = []
+
+    async def run():
+        async def gateway(ws):
+            seen.append(json.loads(await ws.recv())["info"]["role"])
+            await ws.close()
+
+        server, url = await serve(gateway)
+        async with websockets.connect(url) as ws:
+            await Agent(url, "kb_x", role="cluster").session(ws)
+        server.close()
+
+    asyncio.run(run())
+    assert seen == ["cluster"]
+
+
+def test_a_role_that_is_not_built_yet_stops_the_agent_with_a_message(monkeypatch, capsys):
+    import pytest
+    from kaji_agent import __main__ as entry
+
+    monkeypatch.setattr("sys.argv", ["kaji-agent", "--token", "kb_x", "--role", "host"])
+    with pytest.raises(SystemExit):
+        entry.main()
+    assert "the host role is not built yet" in capsys.readouterr().err
