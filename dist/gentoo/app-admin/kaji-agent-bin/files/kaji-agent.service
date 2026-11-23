@@ -1,0 +1,34 @@
+[Unit]
+Description=kaji host agent: reports this machine, its packages and its /etc/portage to kaji
+Documentation=https://github.com/Kaji-Secure/build-agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/kaji-agent --role host
+EnvironmentFile=/etc/kaji-agent/kaji-agent.env
+# The compiled agent unpacks itself on start; /tmp may be noexec, so it uses its own directory.
+Environment=TMPDIR=/var/lib/kaji-agent
+Restart=always
+RestartSec=10
+
+# It reads /var/db/pkg, /etc/portage and /sys, and talks out to kaji: nothing else.
+DynamicUser=yes
+StateDirectory=kaji-agent
+ProtectSystem=strict
+ProtectHome=yes
+PrivateDevices=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

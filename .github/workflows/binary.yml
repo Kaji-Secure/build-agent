@@ -1,0 +1,46 @@
+name: Publish the agent binary
+
+# The host role runs on a machine, not in a container: the same Nuitka-compiled agent as a file (amd64 for now), with its checksum,
+# on the GitHub release of the tag. The units and settings for systemd and OpenRC are in dist/, and an ebuild in dist/gentoo/.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  binary:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (Nuitka compiles the agent, so this takes a few minutes)
+        # The build stage of the image's Dockerfile has the binary at /out/kaji-agent: take it out of there, so the file and the image are one build.
+        run: |
+          docker build --target build -t kaji-agent-build .
+          docker create --name out kaji-agent-build
+          mkdir dist-out
+          docker cp out:/out/kaji-agent "dist-out/kaji-agent-linux-${{ matrix.arch }}"
+          (cd dist-out && sha256sum "kaji-agent-linux-${{ matrix.arch }}" > "kaji-agent-linux-${{ matrix.arch }}.sha256")
+      - name: It starts
+        run: |
+          chmod +x "dist-out/kaji-agent-linux-${{ matrix.arch }}"
+          "dist-out/kaji-agent-linux-${{ matrix.arch }}" --help
+          KAJI_TOKEN= "dist-out/kaji-agent-linux-${{ matrix.arch }}" --role host 2>&1 | grep -q "a token is needed"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kaji-agent-linux-${{ matrix.arch }}
+          path: dist-out/*
+      - name: Attach to the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" dist-out/* --clobber

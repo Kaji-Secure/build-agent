@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE pkgmetadata SYSTEM "https://www.gentoo.org/dtd/metadata.dtd">
+<pkgmetadata>
+	<maintainer type="project"><email>security@kaji.systems</email><name>kaji</name></maintainer>
+	<upstream>
+		<remote-id type="github">Kaji-Secure/build-agent</remote-id>
+	</upstream>
+</pkgmetadata>
