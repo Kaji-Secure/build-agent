@@ -279,11 +279,12 @@ class Runner:
                 ):  # the Job first: they are owned by it
                     await asyncio.to_thread(self.kube.request, "POST", path, obj)
             await self.send({"type": "status", "task": uid, "state": "running"})
-            while not (
-                state := finished(
-                    await asyncio.to_thread(self.kube.request, "GET", f"{self._jobs()}/{job_name(uid)}") or {}
-                )
-            ):
+            while True:
+                job = await asyncio.to_thread(self.kube.request, "GET", f"{self._jobs()}/{job_name(uid)}")
+                if job is None:  # taken away (cancelled): there is nothing to follow and nothing to report
+                    return
+                if state := finished(job):
+                    break
                 await asyncio.sleep(self.poll)
             await self.send(
                 {
@@ -305,6 +306,13 @@ class Runner:
             )
         finally:
             self.active.discard(uid)
+
+    async def cancel(self, uid):
+        """kaji dropped the task (its build was deleted, retried or replanned, or its result was taken): remove its Job. The pods, the ConfigMap and the
+        Secrets it made are owned by the Job and go with it, in the background. A Job that is not there is not an error."""
+        await asyncio.to_thread(
+            self.kube.request, "DELETE", f"{self._jobs()}/{job_name(uid)}?propagationPolicy=Background"
+        )
 
     async def resume(self):
         """After a restart: follow again the tasks whose Jobs are still there. Reporting an end twice is harmless."""

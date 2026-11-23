@@ -19,6 +19,7 @@ class FakeKube:
     def __init__(self, ends="done", message=None):
         self.made = []
         self.jobs, self.calls, self.polls, self.ends, self.message = {}, [], 0, ends, message
+        self.vanish_after = None  # a Job taken away while it is followed: its Nth look finds nothing
 
     def request(self, method, path, body=None, raw=False):
         self.calls.append((method, path))
@@ -41,10 +42,15 @@ class FakeKube:
         name = path.split("/jobs")[1].lstrip("/").split("?")[0]
         if not name:
             return {"items": list(self.jobs.values())}
+        if method == "DELETE":
+            return self.jobs.pop(name, None)
         job = self.jobs.get(name)
         if job is None:
             return None
         self.polls += 1
+        if self.vanish_after is not None and self.polls >= self.vanish_after:
+            self.jobs.pop(name)
+            return None
         return {**job, "status": {self.ends == "done" and "succeeded" or "failed": 1} if self.polls > 1 else {}}
 
 
@@ -294,3 +300,33 @@ def test_a_generic_task_pod_keeps_off_them_too():
     payload = {**PAYLOAD, "volumes": [], "resources": {"requests": {"cpu": "1"}, "limits": {"cpu": "1"}}}
     pod = job_for(UID, payload, "kaji")["spec"]["template"]["spec"]
     assert affinity_terms(pod) == [{"matchExpressions": [NO_BUILDER]}]
+
+
+# ---------------------------------------------------------------- a task kaji dropped
+
+async def nothing(message):
+    pass
+
+
+async def test_cancel_removes_the_job_and_leaves_the_rest_to_its_owner_references():
+    kube = FakeKube()
+    kube.jobs[job_name(UID)] = {"metadata": {"name": job_name(UID)}}
+    await Runner(kube, nothing).cancel(UID)
+    assert ("DELETE", f"/apis/batch/v1/namespaces/kaji/jobs/{job_name(UID)}?propagationPolicy=Background") in kube.calls
+    assert job_name(UID) not in kube.jobs
+
+
+async def test_cancelling_a_job_that_is_already_gone_is_not_an_error():
+    await Runner(FakeKube(), nothing).cancel(UID)
+
+
+async def test_a_task_whose_job_is_taken_away_stops_and_reports_nothing():
+    kube = FakeKube(ends="never")
+    kube.vanish_after = 2
+    out = []
+
+    async def send(message):
+        out.append(message)
+
+    await Runner(kube, send, poll=0).run(UID, PAYLOAD)  # returns instead of waiting for ever
+    assert [m["state"] for m in out] == ["running"]

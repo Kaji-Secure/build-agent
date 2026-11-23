@@ -167,3 +167,31 @@ def test_a_node_the_user_switched_off_is_not_counted_in_the_clusters_capacity():
     off = {**node("amd64", "16", "64Gi"), "metadata": {"labels": {"kaji": "NoBuilder"}}}
     info = node_info(Nodes([node("amd64", "4", "8Gi"), off]))
     assert info["cpus"] == 4 and info["cluster_cpus"] == 4
+
+
+async def test_a_task_kaji_drops_has_its_job_removed():
+    class Kube:
+        namespace = "kaji"
+
+        def __init__(self):
+            self.calls = []
+
+        def request(self, method, path, body=None, raw=False):
+            self.calls.append((method, path))
+            return {"items": []}
+
+    kube = Kube()
+
+    async def gateway(ws):
+        await ws.recv()
+        await ws.send(json.dumps({"type": "cancel", "task": "0b7a3c9e-1111-2222-3333-444455556666"}))
+        await asyncio.sleep(0.2)
+        await ws.close()
+
+    import asyncio
+
+    server, url = await serve(gateway)
+    async with websockets.connect(url, additional_headers={"Authorization": "Bearer kb_x"}) as ws:
+        await Agent(url, "kb_x", kube=kube).session(ws)
+    server.close()
+    assert any(m == "DELETE" and "/jobs/" in p and "propagationPolicy=Background" in p for m, p in kube.calls)

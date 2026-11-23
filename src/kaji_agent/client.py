@@ -125,6 +125,9 @@ class Agent:
                     msg.get("type") == "inspect" and self.role == "host"
                 ):  # asked for, from the console: everything, now
                     await report()
+                elif msg.get("type") == "cancel":  # the task is dropped: take its Job away (a Job that is gone is fine)
+                    if runner:
+                        await runner.cancel(msg["task"])
                 elif msg.get("type") == "inspect":  # asked for, from the console: what the machine is, now
                     await send({"type": "hardware", "hardware": await asyncio.to_thread(sysinfo.collect, self.kube)})
                 elif (
