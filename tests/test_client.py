@@ -59,3 +59,27 @@ def test_it_reports_only_the_host_when_it_may_not_list_nodes():
             raise OSError("403")
 
     assert "arches" not in node_info(Forbidden()) and "arch" in node_info(Forbidden())
+
+
+async def test_an_agent_the_gateway_refuses_fails_and_says_why():
+    import pytest
+
+    async def gateway(ws):
+        await ws.recv()
+        await ws.send(json.dumps({"type": "refused", "reason": "20 of the 16 cores"}))
+        await ws.close(4403)
+
+    server, url = await serve(gateway)
+    agent = Agent(url, "kb_x")
+    with pytest.raises(SystemExit, match="refused this agent: 20 of the 16 cores"):
+        async with websockets.connect(url, additional_headers={"Authorization": "Bearer kb_x"}) as ws:
+            await agent.session(ws)
+    server.close()
+
+
+def test_the_hello_carries_the_threads_per_core_and_the_budget(monkeypatch):
+    from kaji_agent import client
+
+    monkeypatch.setenv("KAJI_CPUS", "12")
+    info = client.node_info()
+    assert info["cpu_budget"] == 12.0 and info["cpu_budget_from"] == "KAJI_CPUS" and info["threads_per_core"] >= 1

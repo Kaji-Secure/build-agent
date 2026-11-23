@@ -15,3 +15,8 @@ resources:
   limits: {memory: 256Mi}
 nodeSelector: {}
 tolerations: []
+
+# The CPU CORES (not threads: with hyper-threading, 16 cores are 32 CPUs) this agent gives kaji to build with. Teams may give 16 in all, over all
+# its agents together; an agent that would go past that is refused and fails. Empty: the container's CPU limit (resources.limits.cpu, which is in
+# CPUs, so it is divided by the threads per core), and without one the biggest node of the cluster.
+cpus: ""

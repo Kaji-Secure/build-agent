@@ -56,10 +56,16 @@ def cluster_capacity(kube):
 
 
 def node_info(kube=None):
+    """What the agent says in its hello. ``cpus`` is the biggest node's logical CPUs (to know whether a task fits); ``threads_per_core`` turns CPUs
+    into cores; ``cpu_budget`` is the cores the user gave kaji, if they said (``KAJI_CPUS``, or the container's CPU limit): the gateway counts it
+    against the plan and never gives this agent more work than it."""
+    budget, source = sysinfo.cpu_budget()
     return {
         "hostname": platform.node(),
         "arch": platform.machine(),
         "system": platform.system(),
+        "threads_per_core": sysinfo.threads_per_core(),
+        **({"cpu_budget": budget, "cpu_budget_from": source} if budget else {}),
         **(cluster_capacity(kube) if kube else {}),
     }
 
@@ -86,6 +92,10 @@ class Agent:
                         task.add_done_callback(running.discard)
                 elif msg.get("type") == "inspect":  # asked for, from the console: what the machine is, now
                     await send({"type": "hardware", "hardware": await asyncio.to_thread(sysinfo.collect, self.kube)})
+                elif (
+                    msg.get("type") == "refused"
+                ):  # not allowed on this plan: fail, and say why, instead of retrying for ever
+                    raise SystemExit(f"the gateway refused this agent: {msg.get('reason') or 'no reason given'}")
                 elif msg.get("type") == "welcome":
                     log.info("connected to %s", self.url)
                     if runner:

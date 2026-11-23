@@ -5,6 +5,7 @@ cluster of several nodes, the nodes themselves can be listed too, if the agent w
 is left out, and nothing else changes.
 """
 
+import glob
 import os
 import shutil
 
@@ -38,6 +39,64 @@ def cpu(proc="/proc"):
     except (AttributeError, OSError):
         cores = os.cpu_count() or 0
     return model, cores
+
+
+def topology(sys_cpu="/sys/devices/system/cpu"):
+    """``(cores, threads)`` of the machine: its physical cores and its logical CPUs (hardware threads), from the kernel's topology, or ``None`` when
+    it does not say. A CPU that is off has no topology and is not counted. kaji's quota is in cores: with two threads to a core, 16 cores are 32 CPUs."""
+    cores, threads = set(), 0
+    for cpu_dir in glob.glob(f"{sys_cpu}/cpu[0-9]*"):
+        try:
+            with open(f"{cpu_dir}/topology/physical_package_id") as f:
+                package = f.read().strip()
+            with open(f"{cpu_dir}/topology/core_id") as f:
+                core = f.read().strip()
+        except OSError:
+            continue
+        cores.add((package, core))
+        threads += 1
+    return (len(cores), threads) if cores else None
+
+
+def threads_per_core(sys_cpu="/sys/devices/system/cpu"):
+    """How many logical CPUs a core has here (1 without hyper-threading, usually 2 with); 1 when the kernel does not say."""
+    found = topology(sys_cpu)
+    return found[1] / found[0] if found else 1.0
+
+
+def cgroup_cpu_limit(root="/sys/fs/cgroup"):
+    """The CPU limit this container runs under, in logical CPUs (``limits.cpu`` of its pod), or ``None`` when it has none."""
+    try:
+        with open(f"{root}/cpu.max") as f:  # cgroup v2: "<quota> <period>", or "max <period>"
+            quota, _, period = f.read().strip().partition(" ")
+        return int(quota) / int(period) if quota != "max" else None
+    except (OSError, ValueError):
+        pass
+    try:
+        with open(f"{root}/cpu/cpu.cfs_quota_us") as f:  # cgroup v1
+            quota = int(f.read())
+        with open(f"{root}/cpu/cpu.cfs_period_us") as f:
+            period = int(f.read())
+        return quota / period if quota > 0 and period > 0 else None
+    except (OSError, ValueError):
+        return None
+
+
+def cpu_budget(environ=None, cgroup_root="/sys/fs/cgroup", sys_cpu="/sys/devices/system/cpu"):
+    """``(cores, where from)``: how many CPU **cores** the user gave kaji to build with, or ``(None, "")`` if they did not say. ``KAJI_CPUS`` is in
+    cores; the CPU limit of the agent's container (``resources.limits.cpu``, in logical CPUs) is turned into cores with the threads per core. The
+    gateway holds the builds to it and counts it against the plan (docs/builder-agent.rst)."""
+    environ = os.environ if environ is None else environ
+    try:
+        declared = float(environ.get("KAJI_CPUS") or 0)
+    except ValueError:
+        declared = 0
+    if declared > 0:
+        return declared, "KAJI_CPUS"
+    limit = cgroup_cpu_limit(cgroup_root)
+    if limit:
+        return round(limit / threads_per_core(sys_cpu), 2), "container limit"
+    return None, ""
 
 
 def memory(proc="/proc"):
@@ -123,9 +182,11 @@ def collect(kube=None, proc="/proc", path="/"):
     model, cores = cpu(proc)
     total, available = memory(proc)
     disk_total, disk_free = disk(path)
+    found = topology()
     out = {
         "cpu_model": model,
-        "cpu_cores": cores,
+        "cpu_cores": cores,  # the logical CPUs this process may run on
+        "cpu_physical_cores": found[0] if found else None,
         "memory_total": total,
         "memory_available": available,
         "disk_total": disk_total,

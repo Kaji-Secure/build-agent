@@ -145,3 +145,69 @@ async def test_the_agent_answers_inspect_with_its_hardware_and_does_not_voluntee
         and seen[1]["hardware"]["cpu_cores"] >= 1
         and "disk_total" in seen[1]["hardware"]
     )
+
+
+# ---------------------------------------------------------------- cores, not threads
+
+
+def cpus(tmp_path, layout):
+    """A fake /sys/devices/system/cpu: ``layout`` is {cpu number: (package, core)}; a number left out is a CPU that is off."""
+    for n, (package, core) in layout.items():
+        d = tmp_path / f"cpu{n}" / "topology"
+        d.mkdir(parents=True)
+        (d / "physical_package_id").write_text(f"{package}\n")
+        (d / "core_id").write_text(f"{core}\n")
+    (tmp_path / "cpu7").mkdir(exist_ok=True)  # a CPU that is off has no topology
+    return str(tmp_path)
+
+
+def test_two_threads_to_a_core_are_counted_as_one_core(tmp_path):
+    sys_cpu = cpus(tmp_path, {0: (0, 0), 1: (0, 1), 2: (0, 0), 3: (0, 1)})
+    assert sysinfo.topology(sys_cpu) == (2, 4) and sysinfo.threads_per_core(sys_cpu) == 2.0
+
+
+def test_a_machine_without_hyperthreading_has_one_thread_per_core(tmp_path):
+    assert sysinfo.threads_per_core(cpus(tmp_path, {0: (0, 0), 1: (0, 1), 2: (0, 2)})) == 1.0
+
+
+def test_two_sockets_with_the_same_core_numbers_are_different_cores(tmp_path):
+    assert sysinfo.topology(cpus(tmp_path, {0: (0, 0), 1: (1, 0)})) == (2, 2)
+
+
+def test_a_kernel_that_does_not_say_counts_one_thread_per_core(tmp_path):
+    assert (
+        sysinfo.topology(str(tmp_path / "nowhere")) is None
+        and sysinfo.threads_per_core(str(tmp_path / "nowhere")) == 1.0
+    )
+
+
+def test_the_container_cpu_limit_is_read_from_cgroup_v2_and_v1(tmp_path):
+    (tmp_path / "cpu.max").write_text("1600000 100000\n")
+    assert sysinfo.cgroup_cpu_limit(str(tmp_path)) == 16.0
+    (tmp_path / "cpu.max").write_text("max 100000\n")
+    assert sysinfo.cgroup_cpu_limit(str(tmp_path)) is None
+    v1 = tmp_path / "v1" / "cpu"
+    v1.mkdir(parents=True)
+    (v1 / "cpu.cfs_quota_us").write_text("400000\n")
+    (v1 / "cpu.cfs_period_us").write_text("100000\n")
+    assert sysinfo.cgroup_cpu_limit(str(tmp_path / "v1")) == 4.0
+    (v1 / "cpu.cfs_quota_us").write_text("-1\n")
+    assert sysinfo.cgroup_cpu_limit(str(tmp_path / "v1")) is None
+
+
+def test_the_budget_is_in_cores_a_limit_of_32_cpus_with_two_threads_is_16_cores(tmp_path):
+    (tmp_path / "cg").mkdir()
+    (tmp_path / "cg" / "cpu.max").write_text("3200000 100000\n")
+    (tmp_path / "sys").mkdir()
+    sys_cpu = cpus(tmp_path / "sys", {0: (0, 0), 1: (0, 0)})  # two threads on one core
+    assert sysinfo.cpu_budget({}, str(tmp_path / "cg"), sys_cpu) == (16.0, "container limit")
+
+
+def test_kaji_cpus_is_cores_and_comes_before_the_container_limit(tmp_path):
+    (tmp_path / "cpu.max").write_text("3200000 100000\n")
+    assert sysinfo.cpu_budget({"KAJI_CPUS": "8"}, str(tmp_path)) == (8.0, "KAJI_CPUS")
+    assert sysinfo.cpu_budget({"KAJI_CPUS": "lots"}, str(tmp_path / "none"), str(tmp_path / "none"))[0] is None
+
+
+def test_without_a_limit_or_a_declaration_there_is_no_budget(tmp_path):
+    assert sysinfo.cpu_budget({}, str(tmp_path), str(tmp_path)) == (None, "")
