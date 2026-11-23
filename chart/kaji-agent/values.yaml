@@ -1,0 +1,17 @@
+# Where the agent connects to, and what it proves itself with. Make a builder in the console (Organization -> Builders) and keep its token.
+url: wss://console.kaji.systems/agent/ws
+token: ""            # the builder's token (kb_...): put into a Secret by this chart
+existingSecret: ""   # or the name of a Secret that has it under the key "token"; then token is not used
+
+image:
+  repository: registry.shift-computing.de/oz123/kaji-agent
+  tag: latest
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# The agent makes the Jobs of its tasks in its own namespace (the release's). The Job's CPUs, memory and architecture come from the task.
+resources:
+  requests: {cpu: 50m, memory: 64Mi}
+  limits: {memory: 256Mi}
+nodeSelector: {}
+tolerations: []

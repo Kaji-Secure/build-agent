@@ -1,0 +1,6 @@
+apiVersion: v2
+name: kaji-agent
+description: "The kaji builder agent, which runs kaji builds on your own nodes (docs/builder-agent.rst)"
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
