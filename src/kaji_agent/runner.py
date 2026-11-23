@@ -7,6 +7,7 @@ The worker ends with a JSON termination message (what it built, reused, copied);
 import asyncio
 import json
 import logging
+import re
 
 LABEL = "kaji.systems/task"
 LOG_TAIL = 200  # lines of the worker's log sent with the result
@@ -28,7 +29,13 @@ ROOTLESS = {
     "seccompProfile": {"type": "Unconfined"},
     "appArmorProfile": {"type": "Unconfined"},
 }
+TASK_TOKEN = re.compile(r"kt1\.\d+\.[0-9a-f]{40,}")  # the token a task reads and uploads with (proxy.mint_task_token)
 log = logging.getLogger("kaji_agent")
+
+
+def redact(text):
+    """The log of a task, without its tokens: pap prints the address it reads from, login and all, and the log goes to the web app and the build's page."""
+    return TASK_TOKEN.sub("kt1.***", text)
 
 
 def job_name(uid):
@@ -236,7 +243,7 @@ class Runner:
         if not isinstance(result, dict):
             result = {}
         try:
-            result["log"] = (
+            result["log"] = redact(
                 self.kube.request("GET", f"{base}/{pod['metadata']['name']}/log?tailLines={LOG_TAIL}", raw=True) or ""
             )
         except OSError:

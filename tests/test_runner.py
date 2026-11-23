@@ -250,3 +250,27 @@ def test_an_unknown_kind_of_volume_is_refused():
 
     with pytest.raises(ValueError):
         job_for(UID, {**ARTIFACT, "volumes": [{"name": "x", "kind": "hostPath", "path": "/"}]}, "kaji")
+
+
+def test_a_tasks_token_is_taken_out_of_its_log():
+    from kaji_agent.runner import redact
+
+    token = "kt1.1795457781." + "ab12" * 16
+    log = f"pap: fetching index from https://kaji-task:{token}@repo.example/Packages\nand again {token}\nnothing else is touched: kt1.x"
+    out = redact(log)
+    assert token not in out and "https://kaji-task:kt1.***@repo.example/Packages" in out and out.endswith("kt1.x")
+
+
+async def test_the_log_a_runner_reports_has_no_token():
+    token = "kt1.1795457781." + "cd34" * 16
+
+    class Leaky(FakeKube):
+        def request(self, method, path, body=None, raw=False):
+            return (
+                f"fetching https://kaji-task:{token}@h/Packages\n"
+                if "/log" in path
+                else super().request(method, path, body, raw)
+            )
+
+    out = await sent(Leaky())
+    assert token not in json.dumps(out) and "kt1.***" in out[-1]["result"]["log"]
