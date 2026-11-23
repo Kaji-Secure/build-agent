@@ -7,8 +7,8 @@ set -eu
 name="${1:-kaji-builder}"
 token="${KAJI_TOKEN:?set KAJI_TOKEN to the builder's token}"
 url="${KAJI_URL:-wss://console.kaji.systems/agent/ws}"
-image="${KAJI_AGENT_IMAGE:-registry.shift-computing.de/oz123/kaji-agent}"
-tag="${KAJI_AGENT_TAG:-latest}"
+image="${KAJI_AGENT_IMAGE:-ghcr.io/kaji-secure/kaji-agent}"
+tag="${KAJI_AGENT_TAG:-}"   # empty: the chart's own version
 here="$(cd "$(dirname "$0")" && pwd)"
 for tool in docker kind kubectl helm; do
     command -v "$tool" >/dev/null || { echo "$tool is needed and was not found" >&2; exit 1; }
@@ -27,5 +27,5 @@ KINDCFG
 fi
 ctx="kind-$name"
 helm upgrade --install kaji-agent "$here/chart/kaji-agent" --kube-context "$ctx" --namespace kaji-agent --create-namespace \
-    --set "token=$token" --set "url=$url" --set "image.repository=$image" --set "image.tag=$tag" --wait --timeout 180s
+    --set "token=$token" --set "url=$url" --set "image.repository=$image" ${tag:+--set "image.tag=$tag"} --wait --timeout 180s
 echo "the agent is running in $ctx: kubectl --context $ctx -n kaji-agent logs deploy/kaji-agent"

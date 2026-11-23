@@ -4,8 +4,8 @@ token: ""            # the builder's token (kb_...): put into a Secret by this c
 existingSecret: ""   # or the name of a Secret that has it under the key "token"; then token is not used
 
 image:
-  repository: registry.shift-computing.de/oz123/kaji-agent
-  tag: latest
+  repository: ghcr.io/kaji-secure/kaji-agent
+  tag: ""  # empty: the chart's appVersion, which is the version of the image published with it
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 

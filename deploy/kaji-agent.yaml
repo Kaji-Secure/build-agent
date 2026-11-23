@@ -59,7 +59,7 @@ spec:
       serviceAccountName: kaji-agent
       containers:
         - name: agent
-          image: registry.shift-computing.de/oz123/kaji-agent:latest
+          image: ghcr.io/kaji-secure/kaji-agent:latest
           env:
             - {name: KAJI_URL, value: "wss://console.kaji.systems/agent/ws"}
             - {name: KAJI_TOKEN, valueFrom: {secretKeyRef: {name: kaji-agent, key: token}}}
