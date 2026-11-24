@@ -156,6 +156,27 @@ def test_the_job_gets_the_tree_the_configuration_and_the_pull_login():
     ]
 
 
+def test_every_tree_of_a_task_is_mounted_at_its_repository():
+    payload = {
+        **FOREIGN,
+        "trees": [
+            {"image": "reg.example/trees/gentoo:abc", "mount": "/var/db/repos/gentoo"},
+            {"image": "reg.example/trees/oz:def", "mount": "/var/db/repos/oz123-overlay"},
+            {"image": "reg.example/trees/guru:123", "mount": "/var/db/repos/guru"},
+        ],
+    }
+    pod = job_for(UID, payload, "kaji")["spec"]["template"]["spec"]
+    mounts = {m["name"]: m["mountPath"] for m in pod["containers"][0]["volumeMounts"] if m["name"].startswith("tree")}
+    volumes = {v["name"]: v["image"]["reference"] for v in pod["volumes"] if v["name"].startswith("tree")}
+    assert mounts == {"tree": "/var/db/repos/gentoo", "tree-1": "/var/db/repos/oz123-overlay", "tree-2": "/var/db/repos/guru"}
+    assert volumes == {"tree": "reg.example/trees/gentoo:abc", "tree-1": "reg.example/trees/oz:def", "tree-2": "reg.example/trees/guru:123"}
+
+
+def test_an_operator_that_knows_one_tree_still_gets_its_tree():
+    pod = job_for(UID, FOREIGN, "kaji")["spec"]["template"]["spec"]  # tree_image and tree_mount, no trees
+    assert [v["name"] for v in pod["volumes"] if v["name"].startswith("tree")] == ["tree"]
+
+
 def test_a_job_without_those_asks_for_none_of_them():
     pod = job_for(UID, PAYLOAD, "kaji")["spec"]["template"]["spec"]
     assert (

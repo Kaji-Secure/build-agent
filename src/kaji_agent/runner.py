@@ -109,9 +109,13 @@ def job_for(uid, payload, namespace):
         [{"name": "distfiles", "mountPath": "/var/cache/distfiles"}],
         [{"name": "distfiles", "emptyDir": {}}],
     )
-    if payload.get("tree_image"):  # the Portage tree, as the image it is kept in
-        mounts.append({"name": "tree", "mountPath": payload["tree_mount"], "readOnly": True})
-        volumes.append({"name": "tree", "image": {"reference": payload["tree_image"], "pullPolicy": "IfNotPresent"}})
+    # the Portage trees, as the images they are kept in: every one of ``trees`` (Gentoo's and the overlays, each mounted at its repository), else the one ``tree_image``
+    # an operator that knows one tree sends
+    trees = payload.get("trees") or ([{"image": payload["tree_image"], "mount": payload["tree_mount"]}] if payload.get("tree_image") else [])
+    for n, tree in enumerate(trees):
+        volume = "tree" if n == 0 else f"tree-{n}"  # not ``name``: that is the job's, used below
+        mounts.append({"name": volume, "mountPath": tree["mount"], "readOnly": True})
+        volumes.append({"name": volume, "image": {"reference": tree["image"], "pullPolicy": "IfNotPresent"}})
     if payload.get("config"):  # the Portage configuration, made a ConfigMap here (see extras_for)
         mounts.append({"name": "config", "mountPath": "/wm/config", "readOnly": True})
         volumes.append({"name": "config", "configMap": {"name": f"{name}-config"}})
