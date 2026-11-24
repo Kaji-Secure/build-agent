@@ -329,4 +329,91 @@ async def test_a_task_whose_job_is_taken_away_stops_and_reports_nothing():
         out.append(message)
 
     await Runner(kube, send, poll=0).run(UID, PAYLOAD)  # returns instead of waiting for ever
-    assert [m["state"] for m in out] == ["running"]
+    assert [m["state"] for m in out if m["type"] == "status"] == ["running"]  # no end is reported (a log tail may have gone up before it vanished)
+
+
+# ---------------------------------------------------------------- the log of a running task goes up the line
+
+
+class Slow(FakeKube):
+    """A Job that runs for a few looks before it ends, and a pod whose log is whatever ``self.log`` says."""
+
+    def __init__(self, looks=4, **kw):
+        super().__init__(**kw)
+        self.looks, self.n, self.log, self.pods = looks, 0, lambda: "line 1\n", True
+
+    def request(self, method, path, body=None, raw=False):
+        if "/log" in path:
+            self.calls.append((method, path))
+            return self.log()
+        if "/pods" in path and not self.pods:
+            return {"items": []}
+        got = super().request(method, path, body, raw)
+        if method == "GET" and "/jobs/" in path and got is not None:
+            self.n += 1
+            got = {**got, "status": {"succeeded": 1} if self.n > self.looks else {}}
+        return got
+
+
+async def logs_sent(kube, **kw):
+    out = []
+
+    async def send(message):
+        out.append(message)
+
+    await Runner(kube, send, poll=0, log_every=0, **kw).run(UID, PAYLOAD)
+    return [m for m in out if m["type"] == "log"]
+
+
+async def test_the_tail_of_a_running_tasks_log_is_sent_when_it_changes():
+    kube, count = Slow(), iter(range(100))
+    kube.log = lambda: f"line {next(count)}\n"
+    got = await logs_sent(kube)
+    assert len(got) >= 3 and all(m["task"] == UID for m in got)
+    assert got[0]["log"] != got[1]["log"]  # each is what the pod said then
+
+
+async def test_a_log_that_has_not_changed_is_not_sent_again():
+    assert len(await logs_sent(Slow(looks=6))) == 1  # six looks, one log
+
+
+async def test_nothing_is_sent_while_the_pod_has_no_log_or_no_pod():
+    class NotStarted(Slow):
+        def request(self, method, path, body=None, raw=False):
+            if "/log" in path:
+                raise KubeError(400, "container is waiting to start")
+            return super().request(method, path, body, raw)
+
+    from kaji_agent.kube import KubeError
+
+    assert await logs_sent(NotStarted()) == []
+    nopod = Slow()
+    nopod.pods = False
+    assert await logs_sent(nopod) == []
+
+
+async def test_a_tasks_token_is_taken_out_of_the_log_that_goes_up_while_it_runs():
+    token = "kt1.1795457781." + "cd34" * 16
+    kube = Slow()
+    kube.log = lambda: f"fetching https://kaji-task:{token}@h/Packages\n"
+    got = await logs_sent(kube)
+    assert got and token not in json.dumps(got) and "kt1.***" in got[0]["log"]
+
+
+async def test_a_log_that_cannot_be_sent_does_not_fail_the_task():
+    kube, out = Slow(), []
+
+    async def send(message):
+        if message["type"] == "log":
+            raise ConnectionError("the line is down")
+        out.append(message)
+
+    await Runner(kube, send, poll=0, log_every=0).run(UID, PAYLOAD)
+    assert out[-1]["state"] == "done"  # it ran to its end; the log was only a convenience
+
+
+async def test_the_tail_sent_is_at_most_the_end_of_the_log():
+    kube = Slow()
+    kube.log = lambda: "x" * 100000 + "END\n"
+    got = await logs_sent(kube)
+    assert len(got[0]["log"]) == 32000 and got[0]["log"].endswith("END\n")

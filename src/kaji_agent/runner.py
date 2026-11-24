@@ -23,6 +23,8 @@ NO_BUILDER_NODES = {
 
 LABEL = "kaji.systems/task"
 LOG_TAIL = 200  # lines of the worker's log sent with the result
+LOG_EVERY = 10  # seconds between the log tails sent while a task runs
+LIVE_LOG_MAX = 32000  # characters of such a tail: the end of it
 POLL_SECONDS = 5
 DRY_RUN_CPU = "100m"
 BINFMT_NAMES = {
@@ -232,12 +234,26 @@ def finished(job):
 
 
 class Runner:
-    def __init__(self, kube, send, poll=POLL_SECONDS):
+    def __init__(self, kube, send, poll=POLL_SECONDS, log_every=LOG_EVERY):
         self.kube, self.send, self.poll = kube, send, poll  # send: async callable(message dict)
+        self.log_every = log_every
         self.active = set()
 
     def _jobs(self):
         return f"/apis/batch/v1/namespaces/{self.kube.namespace}/jobs"
+
+    def _tail(self, uid):
+        """The end of the worker's log so far, without tokens; empty while the pod has none (not scheduled, or its container not started). The console
+        cannot read the pod of a task that runs here, so this is how its build page shows the log while it runs."""
+        base = f"/api/v1/namespaces/{self.kube.namespace}/pods"
+        try:
+            pods = (self.kube.request("GET", f"{base}?labelSelector={LABEL}%3D{uid}") or {}).get("items", [])
+            if not pods:
+                return ""
+            text = self.kube.request("GET", f"{base}/{pods[0]['metadata']['name']}/log?tailLines={LOG_TAIL}", raw=True)
+        except OSError:  # a container that has not started has no log yet: that is not an error
+            return ""
+        return redact(text or "")[-LIVE_LOG_MAX:]
 
     def _result(self, uid, failed):
         """What the worker said at its end, and the tail of its log: read from the Job's pod."""
@@ -279,12 +295,22 @@ class Runner:
                 ):  # the Job first: they are owned by it
                     await asyncio.to_thread(self.kube.request, "POST", path, obj)
             await self.send({"type": "status", "task": uid, "state": "running"})
+            told, next_log = "", 0.0
             while True:
                 job = await asyncio.to_thread(self.kube.request, "GET", f"{self._jobs()}/{job_name(uid)}")
                 if job is None:  # taken away (cancelled): there is nothing to follow and nothing to report
                     return
                 if state := finished(job):
                     break
+                if (now := asyncio.get_running_loop().time()) >= next_log:
+                    next_log = now + self.log_every
+                    text = await asyncio.to_thread(self._tail, uid)
+                    if text and text != told:  # only what changed: a build that is quiet for minutes costs no traffic
+                        told = text
+                        try:
+                            await self.send({"type": "log", "task": uid, "log": text})
+                        except Exception:  # the line is down: the next status says so, as it always did; a log is not worth failing the task for
+                            log.warning("task %s: the log could not be sent", uid)
                 await asyncio.sleep(self.poll)
             await self.send(
                 {
