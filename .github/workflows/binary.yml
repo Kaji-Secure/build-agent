@@ -1,7 +1,8 @@
 name: Publish the agent binary
 
 # The host role runs on a machine, not in a container: the same Nuitka-compiled agent as a file (amd64 for now), with its checksum,
-# on the GitHub release of the tag. The units and settings for systemd and OpenRC are in dist/, and an ebuild in dist/gentoo/.
+# on the GitHub release of the tag. The units and settings for systemd and OpenRC are in dist/, and an ebuild in dist/gentoo/. dist/install.sh is attached too:
+# it downloads the binary, sets the service up and enrolls the host (the console's Add host shows the command).
 on:
   push:
     tags: ["v*"]
@@ -45,4 +46,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
-          gh release upload "$GITHUB_REF_NAME" dist-out/* --clobber
+          gh release upload "$GITHUB_REF_NAME" dist-out/* dist/install.sh --clobber  # install.sh: what the console's "Add host" shows the user to run
