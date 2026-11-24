@@ -93,8 +93,7 @@ def _items(tokens, pos=0):
 def dependencies(text, installed_by_name):
     """What a package needs to run, from the ``RDEPEND`` Portage recorded when it was installed, as pap writes it in a lock file: ``{package: {repository}}``.
     A dependency that is installed is named as installed (``dev-libs/glib-2.88.2``, the one of the atom's slot), else by ``category/name``. Of the
-    alternatives of a ``||`` choice the first that is installed counts (else the first), and a package that several atoms name is listed once, by the first
-    of them. ``installed_by_name`` is ``{category/name: [(category/name-version, info)]}``."""
+    alternatives of a ``||`` choice the first that is installed counts (else the first), and a package that several atoms name is listed once (two atoms of two slots of one package list both). ``installed_by_name`` is ``{category/name: [(category/name-version, info)]}``."""
     chosen = {}
 
     def take(items):
@@ -105,14 +104,13 @@ def dependencies(text, installed_by_name):
                 take(pick if pick is not None else (alternatives[0] if alternatives else []))
                 continue
             name, slot = item
-            if name in chosen:
-                continue
             have = installed_by_name.get(name, [])
             match = next((h for h in have if not slot or h[1].get("slot") == slot), None)
-            chosen[name] = (match[0], {"repository": match[1]["repository"]} if match[1].get("repository") else {}) if match else (name, {})
+            key, detail = (match[0], {"repository": match[1]["repository"]} if match[1].get("repository") else {}) if match else (name, {})
+            chosen.setdefault(key, detail)
 
     take(_items(text.split())[0])
-    return dict(sorted(chosen.values()))
+    return dict(sorted(chosen.items()))
 
 
 def installed(db=VAR_DB_PKG):

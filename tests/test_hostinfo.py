@@ -309,7 +309,7 @@ def test_blockers_versions_slots_use_dependencies_and_repositories_are_not_part_
 
 def test_the_slot_of_an_atom_picks_the_installed_package_of_that_slot_and_one_package_is_listed_once():
     assert list(needs("dev-lang/python:3.13")) == ["dev-lang/python-3.13.1"]
-    assert list(needs("dev-lang/python:3.12 dev-lang/python:3.13")) == ["dev-lang/python-3.12.1"]  # the first atom of it
+    assert list(needs("dev-lang/python:3.12 dev-lang/python:3.13 dev-lang/python:3.13")) == ["dev-lang/python-3.12.1", "dev-lang/python-3.13.1"]  # one entry for each slot named, once
     assert list(needs("dev-lang/python:3.99")) == ["dev-lang/python"]  # no such slot installed: by name
     assert list(needs("dev-lang/python")) == ["dev-lang/python-3.12.1"]
 
