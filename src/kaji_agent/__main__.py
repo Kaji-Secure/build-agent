@@ -3,7 +3,7 @@ import asyncio
 import logging
 import os
 
-from . import enroll
+from . import enroll, tls
 from .client import BUILT, REPORT_EVERY, ROLES, Agent
 from .kube import Kube
 
@@ -34,6 +34,8 @@ def main():
         help="what this agent does (or KAJI_ROLE): it must be what its token was made for",
     )
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    tls.use_system_certificates()  # before any connection: the enrollment is the first
     if args.role not in BUILT:
         parser.error(f"the {args.role} role is not built yet: this version runs {', '.join(BUILT)}")
     directory = enroll.state_dir()
@@ -41,7 +43,6 @@ def main():
     if not args.token and args.enroll_token:
         if args.role != "host":
             parser.error("an enrollment token is for host agents: use --role host")
-        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
         name, args.token = asyncio.run(enroll.enroll(args.url, args.enroll_token, name=args.name))
         try:
             enroll.save_token(directory, args.token)
@@ -52,7 +53,6 @@ def main():
         logging.info("enrolled as %s; its token is kept in %s", name, directory / enroll.TOKEN_FILE)
     if not args.token:
         parser.error("a token is needed: --token or KAJI_TOKEN (a host agent may use --enroll-token or KAJI_ENROLL_TOKEN instead)")
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if args.interval < 60:
         parser.error("the report interval is at least 60 seconds")
     kube = (
