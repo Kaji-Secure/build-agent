@@ -328,3 +328,44 @@ def test_of_the_alternatives_of_a_choice_the_first_installed_counts_else_the_fir
     assert list(needs("|| ( app-misc/none app-misc/nope )")) == ["app-misc/none"]
     assert list(needs("|| ( ( app-misc/a app-misc/b ) sys-devel/gcc )")) == ["sys-devel/gcc-16.2.1_p20260926"]
     assert list(needs("ssl? ( dev-libs/openssl ) || ( ")) == ["dev-libs/openssl"]  # a cut-off string does not raise
+
+
+@pytest.fixture
+def repo_tree(tmp_path):
+    etc, repos = tmp_path / "etc", tmp_path / "repos"
+    (etc / "repos.conf").mkdir(parents=True)
+    (etc / "repos.conf" / "gentoo.conf").write_text(
+        "[DEFAULT]\nmain-repo = gentoo\n\n[gentoo]\nlocation = %s\nsync-type = rsync\nsync-uri = rsync://rsync.gentoo.org/gentoo-portage\npriority = -1000\n" % (repos / "gentoo")
+    )
+    (etc / "repos.conf" / "oz.conf").write_text(
+        "[oz]\nlocation = %s\nsync-type = git\nsync-uri = https://user:secret@git.example.org/oz/overlay.git\npriority = 10\n\n"
+        "[guru]\nlocation = %s\nsync-type = git\nsync-uri = https://github.com/gentoo-mirror/guru.git\n" % (repos / "oz", repos / "guru")
+    )
+    (etc / "repos.conf" / "broken.conf").write_text("this is not an ini file\n")
+    for name in ("gentoo", "oz"):
+        (repos / name / "profiles").mkdir(parents=True)
+        (repos / name / "profiles" / "repo_name").write_text(name + "\n")
+    (repos / "local" / "profiles").mkdir(parents=True)  # a directory repos.conf does not name
+    (repos / "local" / "profiles" / "repo_name").write_text("my-local\n")
+    return str(etc), str(repos)
+
+
+def test_the_repositories_are_listed_one_by_one_official_ones_and_overlays(repo_tree):
+    etc, repos = repo_tree
+    got = {r["name"]: r for r in hostinfo.repo_list(etc, repos)}
+    assert set(got) == {"gentoo", "oz", "guru", "my-local"}
+    assert (got["gentoo"]["kind"], got["gentoo"]["sync_type"], got["gentoo"]["priority"]) == ("official", "rsync", -1000)
+    assert (got["guru"]["kind"], got["oz"]["kind"], got["my-local"]["kind"]) == ("official", "overlay", "overlay")
+    assert got["oz"]["sync_uri"] == "https://REDACTED@git.example.org/oz/overlay.git"  # no password leaves the host
+    assert got["oz"]["present"] and not got["guru"]["present"]  # guru is named in repos.conf but its directory is not synced
+    assert [r["name"] for r in hostinfo.repo_list(etc, repos)] == ["oz", "guru", "my-local", "gentoo"]  # highest priority first
+
+
+def test_a_host_with_no_repos_conf_and_no_repos_has_none(tmp_path):
+    assert hostinfo.repo_list(str(tmp_path / "etc"), str(tmp_path / "repos")) == []
+
+
+def test_the_report_has_the_repositories(repo_tree, tmp_path):
+    etc, repos = repo_tree
+    got = hostinfo.report(etc=etc, db=str(tmp_path / "db"), world_file=str(tmp_path / "world"), repos=repos)
+    assert [r["name"] for r in got["repos"]][:1] == ["oz"]

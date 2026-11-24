@@ -7,6 +7,7 @@ them under the host (``waldmeister_web.console.hostreport``).
 Only text is read, and secrets are kept out: keys and the ``gnupg`` directory are skipped, and a password in the address of a binhost is replaced.
 """
 
+import configparser
 import hashlib
 import json
 import os
@@ -268,6 +269,65 @@ def profile(root=ETC_PORTAGE, repos=REPOS):
     return {"name": chain[0]["name"], "chain": chain} if chain else {}
 
 
+MAX_REPOS = 50
+
+
+def _official(name, uri):
+    """Is this one of Gentoo's own repositories: ``gentoo``, or served from gentoo.org or from the gentoo-mirror organization on GitHub (every repository of the official list)."""
+    return name == "gentoo" or "gentoo.org/" in uri or "github.com/gentoo-mirror/" in uri or "github.com:gentoo-mirror/" in uri
+
+
+def _repo_conf(root):
+    """The sections of ``repos.conf`` (a file, or a directory of files), later files over earlier ones, as Portage reads them."""
+    base = os.path.join(root, "repos.conf")
+    paths = (
+        [os.path.join(base, n) for n in sorted(os.listdir(base)) if not n.startswith(".")]
+        if os.path.isdir(base)
+        else [base]
+    )
+    parser = configparser.RawConfigParser(strict=False)
+    for path in paths:
+        if (text := _read(path)) is not None:
+            try:
+                parser.read_string(text)
+            except configparser.Error:
+                continue  # a file that is not an INI file is skipped, as it is the user's to mend
+    return parser
+
+
+def repo_list(root=ETC_PORTAGE, repos_dir=REPOS):
+    """The repositories of the host, one by one: ``[{"name", "location", "sync_type", "sync_uri", "priority", "kind", "present"}]``, the official ones (Gentoo's
+    own repository and its mirrors) as ``kind: "official"``, every other as ``"overlay"``. From ``repos.conf``, plus the directories of ``/var/db/repos`` it does
+    not name. ``present``: this process can see the repository's directory (a container without ``/var/db/repos`` cannot). Passwords in addresses are removed."""
+    parser = _repo_conf(root)
+    found = {}
+    for name in parser.sections():
+        section = parser[name]
+        location = section.get("location") or os.path.join(repos_dir, name)
+        uri = redact(section.get("sync-uri", "")).strip()
+        try:
+            priority = int(section.get("priority", ""))
+        except ValueError:
+            priority = None
+        found[name] = {
+            "name": name,
+            "location": location,
+            "sync_type": section.get("sync-type", "").strip(),
+            "sync_uri": uri,
+            **({"priority": priority} if priority is not None else {}),
+        }
+    if os.path.isdir(repos_dir):
+        for entry in sorted(os.listdir(repos_dir)):
+            path = os.path.join(repos_dir, entry)
+            name = (_read(os.path.join(path, "profiles", "repo_name")) or entry).strip()
+            if os.path.isdir(path) and name not in found and entry not in found:
+                found[name] = {"name": name, "location": path, "sync_type": "", "sync_uri": ""}
+    for repo in found.values():
+        repo["present"] = os.path.isdir(repo["location"])
+        repo["kind"] = "official" if _official(repo["name"], repo["sync_uri"]) else "overlay"
+    return sorted(found.values(), key=lambda r: (-r.get("priority", 0), r["name"]))[:MAX_REPOS]
+
+
 def lockfile(packages, generator="kaji-agent"):
     """A lock file of ``packages`` (what :func:`installed` returns) in the shape pap writes, with what Portage knows of each package alongside."""
     body = {cpv: dict(info) for cpv, info in sorted(packages.items())}
@@ -365,6 +425,7 @@ def report(etc=ETC_PORTAGE, db=VAR_DB_PKG, world_file=WORLD, repos=REPOS):
         "hardware": hardware(),
         "portage_config": portage_config(etc),
         "profile": profile(etc, repos),
+        "repos": repo_list(etc, repos),
         "lockfile": lockfile(packages),
         "package_builds": package_builds(
             world(world_file), packages, ARCHES.get(platform.machine(), "")
