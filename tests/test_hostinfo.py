@@ -86,6 +86,17 @@ def test_the_portage_config_keeps_text_and_leaves_secrets_out(machine):
     assert hostinfo.portage_config("/nowhere") == {"files": {}}
 
 
+def test_a_profile_of_an_overlay_is_named_with_its_repository(tmp_path):
+    etc = tmp_path / "etc"
+    etc.mkdir()
+    for repo, name, expect in (("oz", "red-5", "oz:red-5"), ("gentoo", "default/linux/amd64/23.0", "default/linux/amd64/23.0")):
+        link = etc / "make.profile"
+        if link.is_symlink():
+            link.unlink()
+        link.symlink_to(f"/var/db/repos/{repo}/profiles/{name}")
+        assert hostinfo.portage_config(str(etc))["profile"] == expect
+
+
 def test_the_lock_file_has_the_shape_pap_writes_and_changes_with_what_is_installed(
     machine,
 ):

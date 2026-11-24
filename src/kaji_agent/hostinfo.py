@@ -166,13 +166,16 @@ def redact(text):
 
 
 def portage_config(root=ETC_PORTAGE):
-    """``{"files": {path under /etc/portage: text}, "profile": "default/linux/amd64/23.0"}``: the shape of a PortageConfig's spec. Binary and oversized files, keys
+    """``{"files": {path under /etc/portage: text}, "profile": "default/linux/amd64/23.0"}`` (``"oz:red-5"`` for a profile of the overlay oz): the shape of a PortageConfig's spec. Binary and oversized files, keys
     and symlinks (except ``make.profile``, which names the profile) are left out."""
     files, total, profile = {}, 0, ""
     link = os.path.join(root, "make.profile")
     if os.path.islink(link):
         target = os.readlink(link)
-        profile = target.split("/profiles/", 1)[1] if "/profiles/" in target else ""
+        if "/profiles/" in target:
+            head, _, rel = target.rpartition("/profiles/")
+            repo = os.path.basename(head)
+            profile = rel if repo == "gentoo" else f"{repo}:{rel}"  # a profile of an overlay is named with its repository, as a parent file does
     for here, dirs, names in os.walk(root, followlinks=False):
         dirs[:] = sorted(
             d
