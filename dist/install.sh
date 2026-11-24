@@ -40,7 +40,8 @@ case "$mode" in auto|binary|docker) ;; *) die "--mode is binary, docker or auto"
 run_container() {
 	docker rm -f kaji-agent >/dev/null 2>&1 || true
 	mounts="-v /var/lib/kaji-agent:/state -v /sys:/sys:ro"
-	for d in /var/db/pkg /etc/portage; do [ -d "$d" ] && mounts="$mounts -v $d:$d:ro"; done
+	# /var/db/repos too: make.profile points into it, and the profile (with its parents) is read from there
+	for d in /var/db/pkg /etc/portage /var/db/repos; do [ -d "$d" ] && mounts="$mounts -v $d:$d:ro"; done
 	# shellcheck disable=SC2086
 	docker run -d --name kaji-agent --restart unless-stopped --hostname "$(hostname)" --env-file "$settings" $mounts \
 		--read-only --tmpfs /tmp:rw,exec,mode=1777 --cap-drop ALL --security-opt no-new-privileges "$image" --role host >/dev/null

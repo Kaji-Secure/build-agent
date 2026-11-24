@@ -243,8 +243,13 @@ def profile(root=ETC_PORTAGE, repos=REPOS):
     first, then its ``parent`` profiles, depth first, once each, as Portage stacks them (the last of the chain is the lowest); a profile that is not there is
     left out. Empty when ``make.profile`` is not a link to a directory."""
     link = os.path.join(root, "make.profile")
-    if not os.path.islink(link) or not os.path.isdir(link):
+    if not os.path.islink(link):
         return {}
+    if not os.path.isdir(link):
+        # the link names a profile this process cannot read (a container that has no /var/db/repos): the name is still worth reporting
+        target = os.readlink(link)
+        name = _profile_name(target) if "/profiles/" in target else ""
+        return {"name": name, "chain": [{"name": name, "files": {}}]} if name else {}
     top = os.path.realpath(link)
     chain, seen, budget = [], set(), [MAX_PROFILE_FILES_TOTAL]
 

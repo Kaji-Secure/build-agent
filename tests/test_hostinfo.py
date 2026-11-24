@@ -264,6 +264,13 @@ def test_a_profile_that_is_not_there_is_empty(profiles, tmp_path):
     assert hostinfo.profile(etc, repos) == {}
 
 
+def test_a_profile_this_process_cannot_read_is_still_named(profiles, tmp_path):
+    etc, repos, _ = profiles
+    # a container without /var/db/repos: the link is there, what it points to is not
+    os.symlink("/var/db/repos/oz/profiles/red-5", os.path.join(etc, "make.profile"))
+    assert hostinfo.profile(etc, repos) == {"name": "oz:red-5", "chain": [{"name": "oz:red-5", "files": {}}]}
+
+
 def test_a_missing_parent_is_left_out_and_a_big_file_is_not_read(profiles):
     etc, repos, gentoo = profiles
     (gentoo / "base/parent").write_text("gentoo:nowhere\n")
