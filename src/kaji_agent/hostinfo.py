@@ -44,9 +44,80 @@ def _read(path):
         return None
 
 
+VERSIONED = re.compile(r"-\d[0-9A-Za-z._]*(-r\d+)?\*?$")  # the version of an atom that has an operator (>=sys-libs/glibc-2.42-r5)
+VERSIONED_CPV = re.compile(r"-\d[0-9A-Za-z._]*(-r\d+)?$")  # category/name-version -> category/name
+NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_+.-]*/[A-Za-z0-9_][A-Za-z0-9_+.-]*")
+
+
+def _atom(token):
+    """``(category/name, slot or "")`` of one atom of a dependency string, or None for a blocker (``!``) or something that is not an atom. The version
+    (of an atom with an operator), the sub-slot, ``[use]`` dependencies and the repository are not kept."""
+    if token.startswith("!"):
+        return None
+    name, _, rest = token.split("[", 1)[0].split("::", 1)[0].partition(":")
+    operator = re.match(r"[<>=~]+", name)
+    name = name[operator.end() :] if operator else name
+    if operator:
+        name = VERSIONED.sub("", name)
+    slot = re.match(r"[A-Za-z0-9_][A-Za-z0-9_+.-]*", rest)
+    return (name, slot.group(0) if slot else "") if NAME.fullmatch(name) else None
+
+
+def _items(tokens, pos=0):
+    """The atoms of a dependency string as a list of ``(name, slot)`` and ``("||", [alternatives])`` (each alternative a list), and where it ended."""
+    out = []
+    while pos < len(tokens):
+        token = tokens[pos]
+        pos += 1
+        if token == ")":
+            return out, pos
+        if token == "||" and pos < len(tokens) and tokens[pos] == "(":
+            alternatives, pos = [], pos + 1
+            while pos < len(tokens) and tokens[pos] != ")":
+                if tokens[pos] == "(":  # a group inside the choice: all of it is one alternative
+                    inner, pos = _items(tokens, pos + 1)
+                    alternatives.append(inner)
+                else:
+                    atom = _atom(tokens[pos])
+                    alternatives.append([atom] if atom else [])
+                    pos += 1
+            out.append(("||", alternatives))
+            pos += 1
+        elif token == "(" or token.endswith("?"):
+            continue  # Portage has already reduced the ``flag? ( )`` conditionals to what applies: what is left counts
+        elif atom := _atom(token):
+            out.append(atom)
+    return out, pos
+
+
+def dependencies(text, installed_by_name):
+    """What a package needs to run, from the ``RDEPEND`` Portage recorded when it was installed, as pap writes it in a lock file: ``{package: {repository}}``.
+    A dependency that is installed is named as installed (``dev-libs/glib-2.88.2``, the one of the atom's slot), else by ``category/name``. Of the
+    alternatives of a ``||`` choice the first that is installed counts (else the first), and a package that several atoms name is listed once, by the first
+    of them. ``installed_by_name`` is ``{category/name: [(category/name-version, info)]}``."""
+    chosen = {}
+
+    def take(items):
+        for item in items:
+            if item[0] == "||":
+                alternatives = item[1]
+                pick = next((a for a in alternatives if any(i[0] != "||" and i[0] in installed_by_name for i in a)), None)
+                take(pick if pick is not None else (alternatives[0] if alternatives else []))
+                continue
+            name, slot = item
+            if name in chosen:
+                continue
+            have = installed_by_name.get(name, [])
+            match = next((h for h in have if not slot or h[1].get("slot") == slot), None)
+            chosen[name] = (match[0], {"repository": match[1]["repository"]} if match[1].get("repository") else {}) if match else (name, {})
+
+    take(_items(text.split())[0])
+    return dict(sorted(chosen.values()))
+
+
 def installed(db=VAR_DB_PKG):
-    """``{category/name-version: {slot, repository, use}}`` of every installed package, from Portage's database. A package being merged is not one yet."""
-    found = {}
+    """``{category/name-version: {slot, repository, use, dependencies}}`` of every installed package, from Portage's database. A package being merged is not one yet."""
+    found, wants = {}, {}
     try:
         categories = sorted(os.listdir(db))
     except OSError:
@@ -69,6 +140,13 @@ def installed(db=VAR_DB_PKG):
             if use := (_read(os.path.join(where, "USE")) or "").split():
                 entry["use"] = sorted(use)
             found[f"{category}/{name}"] = entry
+            wants[f"{category}/{name}"] = _read(os.path.join(where, "RDEPEND")) or ""
+    by_name = {}
+    for cpv, entry in found.items():  # the packages by category/name, to name what a package needs as installed
+        by_name.setdefault(VERSIONED_CPV.sub("", cpv), []).append((cpv, entry))
+    for cpv, text in wants.items():
+        if needs := dependencies(text, by_name):
+            found[cpv]["dependencies"] = needs
     return found
 
 
@@ -189,7 +267,7 @@ def profile(root=ETC_PORTAGE, repos=REPOS):
 
 def lockfile(packages, generator="kaji-agent"):
     """A lock file of ``packages`` (what :func:`installed` returns) in the shape pap writes, with what Portage knows of each package alongside."""
-    body = {cpv: {"dependencies": {}, **info} for cpv, info in sorted(packages.items())}
+    body = {cpv: dict(info) for cpv, info in sorted(packages.items())}
     digest = hashlib.sha256(
         json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()

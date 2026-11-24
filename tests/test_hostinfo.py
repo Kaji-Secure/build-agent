@@ -6,9 +6,11 @@ from kaji_agent import hostinfo
 from kaji_agent.client import Agent
 
 
-def package(db, cpv, slot="0", repository="gentoo", use="ssl -X"):
+def package(db, cpv, slot="0", repository="gentoo", use="ssl -X", rdepend=None):
     where = db / cpv
     where.mkdir(parents=True)
+    if rdepend is not None:
+        (where / "RDEPEND").write_text(rdepend + "\n")
     (where / "SLOT").write_text(slot + "\n")
     (where / "repository").write_text(repository + "\n")
     (where / "USE").write_text(use + "\n")
@@ -20,6 +22,7 @@ def machine(tmp_path):
     package(db, "app-misc/figlet-2.2.5-r2", use="")
     package(db, "dev-libs/openssl-3.3.2", slot="0/3", use="asm ssl")
     package(db, "dev-lang/python-3.13.1", slot="3.13")
+    package(db, "app-misc/needy-1", rdepend=">=dev-libs/openssl-3:0/3= dev-lang/python:3.13[ssl] !<app-misc/old-2 app-misc/gone")
     (db / "sys-libs").mkdir()
     (db / "sys-libs" / "-MERGING-glibc-2.40").mkdir()  # being merged: not installed yet
     (db / "stray-file").write_text("x")
@@ -48,6 +51,7 @@ def test_installed_packages_are_read_from_the_package_database(machine):
     got = hostinfo.installed(machine["db"])
     assert sorted(got) == [
         "app-misc/figlet-2.2.5-r2",
+        "app-misc/needy-1",
         "dev-lang/python-3.13.1",
         "dev-libs/openssl-3.3.2",
     ]
@@ -93,9 +97,14 @@ def test_the_lock_file_has_the_shape_pap_writes_and_changes_with_what_is_install
         and lock["state_hash"].startswith("sha256:")
     )
     assert (
-        lock["packages"]["dev-libs/openssl-3.3.2"]["dependencies"] == {}
+        "dependencies" not in lock["packages"]["dev-libs/openssl-3.3.2"]  # pap leaves it out when there are none
         and lock["packages"]["dev-libs/openssl-3.3.2"]["slot"] == "0"
     )
+    assert lock["packages"]["app-misc/needy-1"]["dependencies"] == {
+        "app-misc/gone": {},
+        "dev-lang/python-3.13.1": {"repository": "gentoo"},
+        "dev-libs/openssl-3.3.2": {"repository": "gentoo"},
+    }
     assert hostinfo.lockfile(packages)["state_hash"] == lock["state_hash"]
     assert hostinfo.lockfile({"a/b-1": {}})["state_hash"] != lock["state_hash"]
 
@@ -267,3 +276,48 @@ def test_a_missing_parent_is_left_out_and_a_big_file_is_not_read(profiles):
         "make.defaults",
         "parent",
     ]
+
+
+INSTALLED = {
+    "dev-lang/python": [("dev-lang/python-3.12.1", {"slot": "3.12", "repository": "gentoo"}), ("dev-lang/python-3.13.1", {"slot": "3.13"})],
+    "sys-libs/glibc": [("sys-libs/glibc-2.43-r4", {"slot": "2.2", "repository": "gentoo"})],
+    "sys-devel/gcc": [("sys-devel/gcc-16.2.1_p20260926", {"slot": "16", "repository": "gentoo"})],
+    "llvm-runtimes/clang-runtime": [("llvm-runtimes/clang-runtime-22", {"slot": "22"})],
+}
+
+
+def needs(text, installed=INSTALLED):
+    return hostinfo.dependencies(text, installed)
+
+
+def test_dependencies_are_what_pap_writes_installed_ones_named_as_installed_and_the_rest_by_name():
+    got = needs(">=dev-libs/jansson-2 sys-libs/glibc:2.2/2.43= virtual/udev x11-libs/libX11[abi_x86_64(-)]")
+    assert got == {
+        "dev-libs/jansson": {},
+        "sys-libs/glibc-2.43-r4": {"repository": "gentoo"},
+        "virtual/udev": {},
+        "x11-libs/libX11": {},
+    }
+    assert list(got) == sorted(got)
+
+
+def test_blockers_versions_slots_use_dependencies_and_repositories_are_not_part_of_a_name():
+    got = needs("!<dev-libs/atk-2.46.0 !!sys-apps/x =sys-libs/glibc-2.43* ~dev-libs/a-1.2-r3 dev-libs/b:3/4=[x,-y] dev-libs/c::overlay >=dev-libs/d-2.0_rc1:1")
+    assert sorted(got) == ["dev-libs/a", "dev-libs/b", "dev-libs/c", "dev-libs/d", "sys-libs/glibc-2.43-r4"]
+    assert needs("") == {} and needs("   ") == {} and needs("not an atom, 12 ((") == {}
+
+
+def test_the_slot_of_an_atom_picks_the_installed_package_of_that_slot_and_one_package_is_listed_once():
+    assert list(needs("dev-lang/python:3.13")) == ["dev-lang/python-3.13.1"]
+    assert list(needs("dev-lang/python:3.12 dev-lang/python:3.13")) == ["dev-lang/python-3.12.1"]  # the first atom of it
+    assert list(needs("dev-lang/python:3.99")) == ["dev-lang/python"]  # no such slot installed: by name
+    assert list(needs("dev-lang/python")) == ["dev-lang/python-3.12.1"]
+
+
+def test_of_the_alternatives_of_a_choice_the_first_installed_counts_else_the_first_and_flags_already_reduced_are_skipped():
+    assert list(needs("|| ( >=sys-devel/gcc-4.2:*[openmp] llvm-runtimes/clang-runtime:*[openmp] ) >=sys-libs/glibc-2.41-r6")) == [
+        "sys-devel/gcc-16.2.1_p20260926", "sys-libs/glibc-2.43-r4"]
+    assert list(needs("|| ( app-misc/none llvm-runtimes/clang-runtime )")) == ["llvm-runtimes/clang-runtime-22"]
+    assert list(needs("|| ( app-misc/none app-misc/nope )")) == ["app-misc/none"]
+    assert list(needs("|| ( ( app-misc/a app-misc/b ) sys-devel/gcc )")) == ["sys-devel/gcc-16.2.1_p20260926"]
+    assert list(needs("ssl? ( dev-libs/openssl ) || ( ")) == ["dev-libs/openssl"]  # a cut-off string does not raise
