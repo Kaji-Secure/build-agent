@@ -15,10 +15,13 @@ depend() {
 }
 
 start_pre() {
-	[ -n "${KAJI_TOKEN}" ] || { eerror "set KAJI_TOKEN in /etc/conf.d/kaji-agent (the token of an agent of role host)"; return 1; }
+	if [ -z "${KAJI_TOKEN}" ] && [ -z "${KAJI_ENROLL_TOKEN}" ] && ! grep -qs '^kb_' /var/lib/kaji-agent/token; then
+		eerror "set KAJI_TOKEN (the token of an agent of role host) or KAJI_ENROLL_TOKEN (an enrollment token) in /etc/conf.d/kaji-agent"
+		return 1
+	fi
 	checkpath --directory --owner kaji-agent:kaji-agent --mode 0750 /var/lib/kaji-agent
 	checkpath --file --owner kaji-agent:kaji-agent --mode 0640 /var/log/kaji-agent.log
 	# the compiled agent unpacks itself on start: into its own directory, as /tmp may be noexec
 	export TMPDIR=/var/lib/kaji-agent
-	export KAJI_TOKEN KAJI_URL KAJI_REPORT_INTERVAL
+	export KAJI_TOKEN KAJI_ENROLL_TOKEN KAJI_NAME KAJI_URL KAJI_REPORT_INTERVAL
 }

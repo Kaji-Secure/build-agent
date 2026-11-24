@@ -246,3 +246,108 @@ async def test_a_job_that_cannot_be_removed_is_logged_and_the_connection_goes_on
             await Agent(url, "kb_x", kube=Kube()).session(ws)
     server.close()
     assert seen == [{"type": "ack", "task": "t2"}] and "could not remove the Job" in caplog.text and "forbidden" in caplog.text
+
+
+# ---------------------------------------------------------------- enrolling a host
+
+
+async def test_a_host_enrolls_with_its_token_and_hostname_and_gets_its_own():
+    from kaji_agent import enroll
+
+    seen = []
+
+    async def gateway(ws):
+        seen.append(ws.request.headers["Authorization"])
+        seen.append(json.loads(await ws.recv()))
+        await ws.send(json.dumps({"type": "enrolled", "name": "edge-7", "token": "kb_mine"}))
+
+    server, url = await serve(gateway)
+    assert await enroll.enroll(url, "ke_fleet", "web1", name="edge-7") == ("edge-7", "kb_mine")
+    server.close()
+    assert seen == ["Bearer ke_fleet", {"type": "enroll", "hostname": "web1", "name": "edge-7"}]
+
+
+async def test_the_gateways_reason_for_refusing_to_enroll_is_the_message():
+    import pytest
+    from kaji_agent import enroll
+
+    async def gateway(ws):
+        await ws.recv()
+        await ws.send(json.dumps({"type": "refused", "reason": "Acme has reached the Free limit of 1 host"}))
+
+    server, url = await serve(gateway)
+    with pytest.raises(SystemExit, match="Free limit of 1 host"):
+        await enroll.enroll(url, "ke_fleet", "web1")
+    server.close()
+
+
+async def test_an_answer_that_is_not_an_enrollment_is_not_taken_for_one():
+    import pytest
+    from kaji_agent import enroll
+
+    async def gateway(ws):
+        await ws.recv()
+        await ws.send(json.dumps({"type": "enrolled", "token": "ke_not_an_agent_token"}))
+
+    server, url = await serve(gateway)
+    with pytest.raises(SystemExit):
+        await enroll.enroll(url, "ke_fleet", "web1")
+    server.close()
+
+
+def test_the_token_is_kept_for_the_agent_only_and_read_back(tmp_path):
+    import stat
+
+    from kaji_agent import enroll
+
+    assert enroll.saved_token(tmp_path / "state") == ""
+    enroll.save_token(tmp_path / "state", "kb_mine")
+    assert enroll.saved_token(tmp_path / "state") == "kb_mine"
+    assert stat.S_IMODE((tmp_path / "state" / "token").stat().st_mode) == 0o600
+    (tmp_path / "state" / "token").write_text("ke_an_enrollment_token")
+    assert enroll.saved_token(tmp_path / "state") == ""  # only an agent's own token counts
+
+
+def test_a_host_enrolls_once_then_starts_with_the_token_it_kept(monkeypatch, tmp_path):
+    from kaji_agent import __main__ as entry
+
+    calls, started = [], []
+
+    async def fake_enroll(url, token, hostname=None, name=""):
+        calls.append((token, name))
+        return "web1", "kb_mine"
+
+    class Stop(Exception):
+        pass
+
+    class FakeAgent:
+        def __init__(self, url, token, kube, role, interval):
+            started.append(token)
+
+        async def run(self):
+            raise Stop
+
+    monkeypatch.setattr("kaji_agent.enroll.enroll", fake_enroll)
+    monkeypatch.setattr(entry, "Agent", FakeAgent)
+    monkeypatch.setenv("KAJI_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("KAJI_TOKEN", raising=False)
+    monkeypatch.setattr("sys.argv", ["kaji-agent", "--role", "host", "--enroll-token", "ke_fleet", "--name", "edge"])
+    for _ in range(2):  # the second start: the token is there, the enrollment token is not used again
+        try:
+            entry.main()
+        except Stop:
+            pass
+    assert calls == [("ke_fleet", "edge")] and started == ["kb_mine", "kb_mine"]
+    assert (tmp_path / "token").read_text().strip() == "kb_mine"
+
+
+def test_an_enrollment_token_is_for_host_agents_only(monkeypatch, capsys, tmp_path):
+    import pytest
+    from kaji_agent import __main__ as entry
+
+    monkeypatch.setenv("KAJI_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("KAJI_TOKEN", raising=False)
+    monkeypatch.setattr("sys.argv", ["kaji-agent", "--role", "builder", "--enroll-token", "ke_fleet"])
+    with pytest.raises(SystemExit):
+        entry.main()
+    assert "for host agents" in capsys.readouterr().err

@@ -24,7 +24,7 @@ def test_both_services_run_the_host_role_and_name_where_the_token_comes_from():
     assert (
         "ExecStart=/usr/bin/kaji-agent --role host" in unit and "EnvironmentFile=/etc/kaji-agent/kaji-agent.env" in unit
     )
-    assert 'command_args="--role host"' in init and "KAJI_TOKEN" in init
+    assert 'command_args="--role host"' in init and "KAJI_TOKEN" in init and "KAJI_ENROLL_TOKEN" in init
 
 
 def test_the_unit_gives_the_agent_no_more_than_it_reads():
