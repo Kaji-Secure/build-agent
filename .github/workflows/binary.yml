@@ -1,7 +1,7 @@
 name: Publish the agent binary
 
-# The host role runs on a machine, not in a container: the same Nuitka-compiled agent as a file (amd64 for now), with its checksum,
-# on the GitHub release of the tag. The units and settings for systemd and OpenRC are in dist/, and an ebuild in dist/gentoo/. dist/install.sh is attached too:
+# The host role runs on a machine, not in a container: the same Nuitka-compiled agent as a file (amd64 and arm64, each built natively on a runner of its own architecture: Nuitka does not cross-compile),
+# with its checksum, on the GitHub release of the tag. The units and settings for systemd and OpenRC are in dist/, and an ebuild in dist/gentoo/. dist/install.sh is attached too:
 # it downloads the binary, sets the service up and enrolls the host (the console's Add host shows the command).
 on:
   push:
@@ -18,6 +18,8 @@ jobs:
         include:
           - arch: amd64
             runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -40,8 +42,20 @@ jobs:
         with:
           name: kaji-agent-linux-${{ matrix.arch }}
           path: dist-out/*
+
+  # One job attaches both files: two matrix jobs creating the release at the same time would race.
+  release:
+    if: github.ref_type == 'tag'
+    needs: binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4  # dist/install.sh
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: kaji-agent-linux-*
+          path: dist-out
+          merge-multiple: true
       - name: Attach to the release
-        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

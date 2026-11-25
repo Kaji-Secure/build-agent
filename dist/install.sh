@@ -9,7 +9,7 @@
 # Options: --binary or --docker (force the way; --mode binary|docker|auto), --name NAME (the name to enroll under: a host made in the console has its own),
 # --url WSS_URL (another gateway), --version X.Y.Z (default: the latest).
 # The token may also be in KAJI_ENROLL_TOKEN. It is used once: the agent then keeps its own token in /var/lib/kaji-agent/token and the spent one is taken out of
-# the settings. Only x86_64 for now. Installed: /usr/bin/kaji-agent, the service, /etc/kaji-agent/kaji-agent.env or /etc/conf.d/kaji-agent (mode 0600), and,
+# the settings. For x86_64 and aarch64. Installed: /usr/bin/kaji-agent, the service, /etc/kaji-agent/kaji-agent.env or /etc/conf.d/kaji-agent (mode 0600), and,
 # with OpenRC, a system user kaji-agent. Run again with a new token to enroll again; it replaces the binary and the service files and nothing else.
 set -eu
 
@@ -31,7 +31,7 @@ done
 
 die() { echo "kaji-agent install: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "run this as root: ... | sudo sh -s -- ke_..."
-[ "$(uname -m)" = x86_64 ] || die "this release has the agent for x86_64 only (arm64 is not built yet)"
+case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) die "this release has the agent for x86_64 and aarch64 only" ;; esac
 case "$token" in ke_*) ;; *) grep -qs '^kb_' /var/lib/kaji-agent/token || die "no enrollment token: pass it as the argument (ke_...) or in KAJI_ENROLL_TOKEN" ;; esac
 case "$mode" in auto|binary|docker) ;; *) die "--mode is binary, docker or auto" ;; esac
 
@@ -97,13 +97,13 @@ command -v sha256sum >/dev/null || die "sha256sum is needed"
 if [ -n "$version" ]; then base="https://github.com/$REPO/releases/download/v${version#v}"; else base="https://github.com/$REPO/releases/latest/download"; fi
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 echo "downloading the kaji agent ${version:-(latest)} ..."
-curl -fsSL -o "$work/kaji-agent-linux-amd64" "$base/kaji-agent-linux-amd64" || die "could not download $base/kaji-agent-linux-amd64"
-curl -fsSL -o "$work/kaji-agent-linux-amd64.sha256" "$base/kaji-agent-linux-amd64.sha256" || die "could not download the checksum"
-(cd "$work" && sha256sum -c kaji-agent-linux-amd64.sha256) || die "the checksum does not match: nothing was installed"
+curl -fsSL -o "$work/kaji-agent-linux-$arch" "$base/kaji-agent-linux-$arch" || die "could not download $base/kaji-agent-linux-$arch"
+curl -fsSL -o "$work/kaji-agent-linux-$arch.sha256" "$base/kaji-agent-linux-$arch.sha256" || die "could not download the checksum"
+(cd "$work" && sha256sum -c kaji-agent-linux-$arch.sha256) || die "the checksum does not match: nothing was installed"
 
 if [ -d /run/systemd/system ]; then init=systemd; elif command -v rc-service >/dev/null; then init=openrc; else die "neither systemd nor OpenRC found: run /usr/bin/kaji-agent --role host by hand (see docs/hosts.rst)"; fi
 [ "$init" = systemd ] && { systemctl stop kaji-agent 2>/dev/null || true; } || { rc-service kaji-agent stop >/dev/null 2>&1 || true; }
-install -m 0755 "$work/kaji-agent-linux-amd64" /usr/bin/kaji-agent
+install -m 0755 "$work/kaji-agent-linux-$arch" /usr/bin/kaji-agent
 
 umask 077
 if [ "$init" = systemd ]; then
