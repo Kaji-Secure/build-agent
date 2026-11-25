@@ -47,7 +47,7 @@ jobs:
       - name: One multi-arch tag
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/kaji-agent"
-          if [ "${GITHUB_REF_TYPE}" = tag ]; then version="${GITHUB_REF_NAME#v}"; tags="$version latest"; else tags=dev; fi
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then version="${GITHUB_REF_NAME#v}"; tags="$version latest"; else version=dev; tags=dev; fi
           for tag in $tags; do
             docker buildx imagetools create -t "$image:$tag" "$image:$version-amd64" "$image:$version-arm64"
           done
