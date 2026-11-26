@@ -24,3 +24,7 @@ cpus: ""
 # What this agent does: builder (runs your builds; the only role built so far), host or cluster. It must be what its token was made for in the
 # console (Organization > Agents), or the gateway refuses it.
 role: builder
+
+# The agent also tells the console what the cluster is: its Kubernetes version, the operating system of each node and the images that run in it (the console's
+# Clusters page). It needs to list pods of all namespaces (read-only: the RBAC adds it). false: no such report, and the RBAC has no pods rule.
+clusterReport: true

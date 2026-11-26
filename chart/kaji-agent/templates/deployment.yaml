@@ -28,6 +28,9 @@ spec:
             - {name: KAJI_URL, value: {{ .Values.url | quote }}}
             - {name: KAJI_TOKEN, valueFrom: {secretKeyRef: {name: {{ include "kaji-agent.secret" . }}, key: token}}}
             - {name: KAJI_ROLE, value: {{ .Values.role | default "builder" | quote }}}
+            {{- if not .Values.clusterReport }}
+            - {name: KAJI_CLUSTER_REPORT, value: "0"}
+            {{- end }}
             {{- if .Values.cpus }}
             - {name: KAJI_CPUS, value: {{ .Values.cpus | quote }}}
             {{- end }}

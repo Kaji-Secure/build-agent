@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata: {name: {{ .Release.Name }}, namespace: {{ .Release.Namespace }}}
 ---
-# The agent makes Jobs (and the ConfigMap and Secrets each needs) in its own namespace, and reads their pods for the result and the log: nothing else there. The one thing it may read beyond its namespace is the list of nodes (below).
+# The agent makes Jobs (and the ConfigMap and Secrets each needs) in its own namespace, and reads their pods for the result and the log: nothing else there. Beyond its namespace it may only list the nodes and, for the cluster report, the pods (below).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata: {name: {{ .Release.Name }}, namespace: {{ .Release.Namespace }}}
@@ -26,7 +26,7 @@ metadata: {name: {{ .Release.Name }}, namespace: {{ .Release.Namespace }}}
 subjects: [{kind: ServiceAccount, name: {{ .Release.Name }}, namespace: {{ .Release.Namespace }}}]
 roleRef: {kind: Role, name: {{ .Release.Name }}, apiGroup: rbac.authorization.k8s.io}
 ---
-# Read the nodes, only to tell the console which architectures and sizes this cluster can run, so that a task is not given to a builder it cannot fit.
+# Read the nodes, to tell the console which architectures and sizes this cluster can run, so that a task is not given to a builder it cannot fit, and what each runs.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata: {name: {{ .Release.Namespace }}-{{ .Release.Name }}-nodes}
@@ -34,6 +34,13 @@ rules:
 - apiGroups: [""]
   resources: ["nodes"]
   verbs: ["list"]
+{{- if .Values.clusterReport }}
+# Also the pods of every namespace, to tell the console which images run in the cluster (the cluster report: names, namespaces and images; never their
+# environment, arguments or volumes, and no secrets or config maps). Switch it off with clusterReport: false.
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["list"]
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

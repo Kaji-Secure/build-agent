@@ -139,8 +139,9 @@ async def test_when_asked_the_agent_answers_at_once_and_again_with_the_cpus_when
     async def gateway(ws):
         await ws.recv()  # hello
         await ws.send(json.dumps({"type": "inspect"}))
-        for _ in range(2):
-            got.append(json.loads(await ws.recv()))
+        while len(got) < 2:  # the builder's cluster report (kind "report") may come between the two
+            if (msg := json.loads(await ws.recv()))["type"] == "hardware":
+                got.append(msg)
         await ws.close()
 
     class K:

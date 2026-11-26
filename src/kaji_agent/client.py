@@ -7,12 +7,13 @@ protocol's tests on both sides.
 import asyncio
 import json
 import logging
+import os
 import platform
 import random
 
 import websockets
 
-from . import hostinfo, nodeprobe, sysinfo
+from . import clusterinfo, hostinfo, nodeprobe, sysinfo
 from .kube import KubeError
 from .sysinfo import schedulable  # noqa: F401  (what a node can take: see there)
 from .runner import Runner
@@ -90,6 +91,8 @@ class Agent:
     def __init__(self, url, token, kube=None, role="builder", interval=REPORT_EVERY):
         self.url, self.token, self.role, self.interval = url, token, role, interval
         self.kube = kube  # the cluster the tasks run in; without one the agent only acknowledges them
+        self.cluster_reports = os.environ.get("KAJI_CLUSTER_REPORT", "1") != "0"  # the chart's clusterReport: false switches the cluster report off
+        self.cluster_warned = False
 
     async def session(self, ws):
         async def send(message):
@@ -108,9 +111,23 @@ class Agent:
                 }
             )
 
+        async def cluster_report():  # a builder in a cluster also says what the cluster is: its nodes' OS and the images that run in it (clusterinfo.py)
+            if not (self.kube and self.role == "builder" and self.cluster_reports):
+                return
+            try:
+                found = await asyncio.to_thread(clusterinfo.report, self.kube)
+            except (KubeError, OSError) as err:  # a report that fails is tried again at the next time, and the builder goes on building
+                log.warning("could not read the cluster: %s", err)
+                return
+            if found:
+                await send({"type": "report", "kind": "cluster", "report": found})
+            elif not self.cluster_warned:
+                self.cluster_warned = True
+                log.info("the cluster is not reported: the agent may not list nodes and pods (clusterReport in the chart)")
+
         async def every():
             while True:
-                await report()
+                await (report() if self.role == "host" else cluster_report())
                 await asyncio.sleep(self.interval)
 
         reporting = None
@@ -144,6 +161,8 @@ class Agent:
                 elif msg.get("type") == "inspect":  # asked for, from the console: what the machine is, now
                     hardware = await asyncio.to_thread(sysinfo.collect, self.kube)
                     await send({"type": "hardware", "hardware": hardware})
+                    running.add(task := asyncio.create_task(cluster_report()))  # listing every pod takes a while: not before the answers below
+                    task.add_done_callback(running.discard)
                     names = [n["name"] for n in hardware.get("nodes") or [] if n.get("name")]
                     if self.kube and names and not probing:  # then, as the answers come, the CPU of each node (a Job on it, which takes a while)
                         probing.append(task := asyncio.create_task(report_cpus(names)))
@@ -157,7 +176,7 @@ class Agent:
                     log.info("connected to %s", self.url)
                     if runner:
                         running.update(await runner.resume())
-                    if self.role == "host" and reporting is None:
+                    if self.role in ("host", "builder") and reporting is None:
                         reporting = asyncio.create_task(
                             every()
                         )  # at once, then on the timer
