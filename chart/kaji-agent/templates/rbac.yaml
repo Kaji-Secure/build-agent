@@ -14,6 +14,9 @@ rules:
   resources: ["configmaps", "secrets"]
   verbs: ["create"]
 - apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["delete"]  # the Secret of a task's credentials (a hash, a password, a token), removed as soon as the task ends instead of with the Job, an hour later
+- apiGroups: [""]
   resources: ["pods"]
   verbs: ["get", "list"]
 - apiGroups: [""]

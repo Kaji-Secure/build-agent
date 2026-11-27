@@ -1,6 +1,7 @@
 import json
 
-from kaji_agent.runner import LABEL, Runner, extras_for, finished, job_for, job_name
+from kaji_agent.kube import KubeError
+from kaji_agent.runner import LABEL, Runner, env_for, extras_for, finished, job_for, job_name
 
 UID = "0b7a3c9e-1111-2222-3333-444455556666"
 PAYLOAD = {
@@ -20,9 +21,14 @@ class FakeKube:
         self.made = []
         self.jobs, self.calls, self.polls, self.ends, self.message = {}, [], 0, ends, message
         self.vanish_after = None  # a Job taken away while it is followed: its Nth look finds nothing
+        self.secret_delete_fails = False  # a Role from before the agent removed Secrets: 403
 
     def request(self, method, path, body=None, raw=False):
         self.calls.append((method, path))
+        if method == "DELETE" and "/secrets/" in path:
+            if self.secret_delete_fails:
+                raise KubeError(403, "forbidden")
+            return {}
         if "/log" in path:
             return "last line\n"
         if "/pods" in path:
@@ -438,3 +444,70 @@ async def test_the_tail_sent_is_at_most_the_end_of_the_log():
     kube.log = lambda: "x" * 100000 + "END\n"
     got = await logs_sent(kube)
     assert len(got[0]["log"]) == 32000 and got[0]["log"].endswith("END\n")
+
+
+# ---------------------------------------------------------------- credentials go to the Job from a Secret, never as values in the Job
+
+HASH = "$6$salt$" + "a" * 86
+CREDENTIALS = {
+    **PAYLOAD,
+    "env": {"WM_TASK": "{}", "WM_ROOT_PASSWORD_HASH": HASH, "WM_UPLOAD_TOKEN": "kt1.1.deadbeef", "EMPTY": ""},
+    "secret_env": ["WM_ROOT_PASSWORD_HASH", "WM_UPLOAD_TOKEN", "EMPTY", "NOT_THERE"],
+}
+DESCRIBED = {
+    "image": "w:1",
+    "command": ["waldmeister", "kajios-build"],
+    "resources": {"limits": {"cpu": "2"}},
+    "env": {"WM_KAJIOS": "{}", "WM_ROOT_PASSWORD_HASH": HASH},
+    "secret_env": ["WM_ROOT_PASSWORD_HASH"],
+    "volumes": [],
+}
+
+
+def test_the_variables_a_task_lists_as_secret_are_read_from_a_secret_and_the_others_stay_values():
+    env, held = env_for("kaji-x", CREDENTIALS)
+    by = {e["name"]: e for e in env}
+    assert by["WM_TASK"] == {"name": "WM_TASK", "value": "{}"} and by["EMPTY"] == {"name": "EMPTY", "value": ""}  # not secret, or nothing to hide
+    assert by["WM_ROOT_PASSWORD_HASH"] == {"name": "WM_ROOT_PASSWORD_HASH", "valueFrom": {"secretKeyRef": {"name": "kaji-x-env", "key": "WM_ROOT_PASSWORD_HASH"}}}
+    assert held == {"WM_ROOT_PASSWORD_HASH": HASH, "WM_UPLOAD_TOKEN": "kt1.1.deadbeef"}
+
+
+def test_a_task_from_an_operator_that_does_not_say_which_are_secret_gets_plain_values_as_before():
+    env, held = env_for("kaji-x", {**CREDENTIALS, "secret_env": None})
+    assert all("value" in e for e in env) and held == {}
+    assert env_for("kaji-x", {"env": {"A": "1"}}) == ([{"name": "A", "value": "1"}], {})
+
+
+def test_a_job_of_either_kind_has_none_of_the_credentials_in_it_and_a_secret_made_for_it_holds_them():
+    for payload, key in ((CREDENTIALS, "WM_UPLOAD_TOKEN"), (DESCRIBED, "WM_ROOT_PASSWORD_HASH")):
+        job = {**job_for(UID, payload, "kaji")}
+        job["metadata"] = {**job["metadata"], "uid": "u1"}
+        text = json.dumps(job)
+        assert HASH not in text and "kt1.1.deadbeef" not in text  # nothing in the Job, so nothing in kubectl get job -o yaml
+        extras = {path.rsplit("/", 1)[-1]: obj for path, obj in extras_for(UID, payload, "kaji", job)}
+        env_secret = next(obj for obj in extras.values() if obj["metadata"]["name"] == f"{job_name(UID)}-env")
+        assert env_secret["stringData"][key] in (HASH, "kt1.1.deadbeef") and env_secret["metadata"]["ownerReferences"][0]["uid"] == "u1"  # owned: it goes with the Job at the latest
+
+
+def test_a_task_with_no_credentials_makes_no_secret_for_them():
+    job = job_for(UID, PAYLOAD, "kaji")
+    assert not any(obj["metadata"]["name"].endswith("-env") for _, obj in extras_for(UID, PAYLOAD, "kaji", {**job, "metadata": {**job["metadata"], "uid": "u"}}))
+
+
+async def test_the_secret_of_the_credentials_is_removed_as_soon_as_the_task_ends():
+    kube = FakeKube()
+    await Runner(kube, nothing, poll=0).run(UID, CREDENTIALS)
+    assert ("DELETE", f"/api/v1/namespaces/kaji/secrets/{job_name(UID)}-env") in kube.calls
+    assert any(path.endswith("/secrets") and body["metadata"]["name"] == f"{job_name(UID)}-env" for path, body in kube.made)  # it was made with the Job
+
+
+async def test_a_secret_that_cannot_be_removed_does_not_fail_the_task_and_the_end_is_still_reported():
+    kube = FakeKube()
+    kube.secret_delete_fails = True  # a Role from before the agent could remove Secrets: it goes with the Job
+    out = []
+
+    async def send(message):
+        out.append(message)
+
+    await Runner(kube, send, poll=0).run(UID, CREDENTIALS)
+    assert out[-1]["type"] == "status" and out[-1]["state"] == "done"

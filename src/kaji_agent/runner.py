@@ -9,6 +9,8 @@ import json
 import logging
 import re
 
+from .kube import KubeError
+
 # A node the user labelled ``kaji: NoBuilder`` gets none of this agent's pods (nodes without the label are fine); the operator does the same.
 NO_BUILDER_NODES = {
     "affinity": {
@@ -74,6 +76,21 @@ def volume_for(name, v):
     return {"name": v["name"], **volume}, mount
 
 
+def env_for(name, payload):
+    """``(the container's env entries, {name: value} for the Secret)``. The variables a task lists in ``secret_env`` (the operator says which of its environment is a credential: a hash,
+    a password, a token) are not written into the Job as values: they are read from a Secret made for the Job, ``<job>-env`` (``extras_for``), so that ``kubectl get job -o yaml``
+    and a describe of the pod show none of them. A task from an operator that does not send ``secret_env`` gets plain values, as before."""
+    secret = set(payload.get("secret_env") or [])
+    env, held = [], {}
+    for key, value in payload.get("env", {}).items():
+        if key in secret and value != "":
+            env.append({"name": key, "valueFrom": {"secretKeyRef": {"name": f"{name}-env", "key": key}}})
+            held[key] = value
+        else:
+            env.append({"name": key, "value": value})
+    return env, held
+
+
 def generic_pod(name, payload):
     """The pod of a task that describes it itself: ``volumes``, ``resources`` and ``rootless``, as the operator's own Job for it has them."""
     volumes, mounts = [], []
@@ -86,7 +103,7 @@ def generic_pod(name, payload):
         "image": payload["image"],
         "command": payload["command"],
         "resources": payload["resources"],
-        "env": [{"name": k, "value": v} for k, v in payload.get("env", {}).items()],
+        "env": env_for(name, payload)[0],
         "volumeMounts": mounts,
     }
     if payload.get("rootless"):
@@ -128,7 +145,7 @@ def job_for(uid, payload, namespace):
                 "image": payload["image"],
                 "command": payload["command"],
                 "resources": resources,
-                "env": [{"name": k, "value": v} for k, v in payload.get("env", {}).items()],
+                "env": env_for(name, payload)[0],
                 "volumeMounts": mounts,
             }
         ],
@@ -215,6 +232,19 @@ def extras_for(uid, payload, namespace, job):
                     },
                 )
             )
+    if held := env_for(name, payload)[1]:  # the credentials of the task: for the Job's pod to read, and removed as soon as the task ends (Runner.run)
+        out.append(
+            (
+                f"/api/v1/namespaces/{namespace}/secrets",
+                {
+                    "apiVersion": "v1",
+                    "kind": "Secret",
+                    "type": "Opaque",
+                    "metadata": {"name": f"{name}-env", **meta},
+                    "stringData": held,
+                },
+            )
+        )
     if payload.get("pull_secret"):
         out.append(
             (
@@ -324,6 +354,7 @@ class Runner:
                     "result": await asyncio.to_thread(self._result, uid, state == "failed"),
                 }
             )
+            await self._drop_env(uid)  # the task has ended: its credentials need not stay in the cluster for the hour the Job does
         except Exception as err:  # the task cannot go on: say so, instead of leaving it running for ever
             log.exception("task %s failed", uid)
             await self.send(
@@ -336,6 +367,16 @@ class Runner:
             )
         finally:
             self.active.discard(uid)
+
+    async def _drop_env(self, uid):
+        """Remove the Secret made for the Job's credentials (``<job>-env``). A Secret that is not there is fine; one that cannot be removed (an older Role has no ``delete``
+        on Secrets) is left to its owner, the Job, which takes it away when it is removed, an hour after it ends."""
+        try:
+            await asyncio.to_thread(
+                self.kube.request, "DELETE", f"/api/v1/namespaces/{self.kube.namespace}/secrets/{job_name(uid)}-env"
+            )
+        except (KubeError, OSError) as err:
+            log.warning("task %s: its credentials Secret could not be removed (it goes with the Job): %s", uid, err)
 
     async def cancel(self, uid):
         """kaji dropped the task (its build was deleted, retried or replanned, or its result was taken): remove its Job. The pods, the ConfigMap and the
