@@ -176,7 +176,7 @@ start_pre() {
 	checkpath --file --owner kaji-agent:kaji-agent --mode 0640 /var/log/kaji-agent.log
 	# the compiled agent unpacks itself on start: into its own directory, as /tmp may be noexec
 	export TMPDIR=/var/lib/kaji-agent
-	export KAJI_TOKEN KAJI_ENROLL_TOKEN KAJI_NAME KAJI_URL KAJI_REPORT_INTERVAL
+	export KAJI_TOKEN KAJI_ENROLL_TOKEN KAJI_NAME KAJI_URL KAJI_REPORT_INTERVAL KAJI_HOST_SCAN KAJI_HOST_ROOT KAJI_TRIVY_URL KAJI_TRIVY_BIN KAJI_TRIVY_DB_REPOSITORY TRIVY_USERNAME TRIVY_PASSWORD
 }
 EOF_INITD
 	chmod 0755 /etc/init.d/kaji-agent

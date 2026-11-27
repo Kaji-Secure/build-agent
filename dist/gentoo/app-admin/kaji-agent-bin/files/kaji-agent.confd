@@ -11,3 +11,17 @@ KAJI_TOKEN=""
 #KAJI_URL="wss://console.kaji.systems/agent/ws"
 # Seconds between reports (default 21600, six hours; at least 60).
 #KAJI_REPORT_INTERVAL="21600"
+
+# Vulnerability scan of this host's packages with Trivy (not on Gentoo, which has the GLSA advisories). Nothing has to be installed: the agent fetches Trivy.
+# Each of these, left unset or blank, means the public one. 0 switches the scan off.
+#KAJI_HOST_SCAN="1"
+# Where Trivy comes from if you keep it in your own repository: a directory laid out like the GitHub release (trivy_<version>_Linux-64bit.tar.gz and
+# trivy_<version>_checksums.txt; default https://github.com/aquasecurity/trivy/releases/download/v<version>), or a Trivy you installed.
+#KAJI_TRIVY_URL=""
+#KAJI_TRIVY_BIN=""
+# Trivy's vulnerability database from your own registry (default ghcr.io/aquasecurity/trivy-db:2), and the login it needs.
+#KAJI_TRIVY_DB_REPOSITORY=""
+#TRIVY_USERNAME=""
+#TRIVY_PASSWORD=""
+# For an agent in a container: where the host's root is mounted (read-only), so that the host is scanned and not the container.
+#KAJI_HOST_ROOT=""

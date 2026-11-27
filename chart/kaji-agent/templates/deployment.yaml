@@ -31,6 +31,15 @@ spec:
             {{- if not .Values.clusterReport }}
             - {name: KAJI_CLUSTER_REPORT, value: "0"}
             {{- end }}
+            {{- if not .Values.imageScan.enabled }}
+            - {name: KAJI_IMAGE_SCAN, value: "0"}
+            {{- end }}
+            {{- if .Values.imageScan.image }}
+            - {name: KAJI_TRIVY_IMAGE, value: {{ .Values.imageScan.image | quote }}}
+            {{- end }}
+            {{- if .Values.imageScan.dbRepository }}
+            - {name: KAJI_TRIVY_DB_REPOSITORY, value: {{ .Values.imageScan.dbRepository | quote }}}
+            {{- end }}
             {{- if .Values.cpus }}
             - {name: KAJI_CPUS, value: {{ .Values.cpus | quote }}}
             {{- end }}

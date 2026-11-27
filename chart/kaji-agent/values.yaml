@@ -28,3 +28,12 @@ role: builder
 # The agent also tells the console what the cluster is: its Kubernetes version, the operating system of each node and the images that run in it (the console's
 # Clusters page). It needs to list pods of all namespaces (read-only: the RBAC adds it). false: no such report, and the RBAC has no pods rule.
 clusterReport: true
+
+# The agent also scans the images that run in the cluster for known vulnerabilities (the console's Clusters page): a short Trivy Job per image, in the release's namespace,
+# that downloads Trivy's database and the image, and whose findings (not the image) the agent sends to the console. It needs the cluster report (clusterReport) and
+# outgoing HTTPS to the image's registry and to ghcr.io (Trivy's database). An image that needs credentials is shown as not scanned. enabled: false never starts a Job.
+imageScan:
+  enabled: true
+  # Where Trivy comes from, for an organization that keeps it in its own repositories. Each one left empty is the public one.
+  image: ""         # the Trivy image the Jobs run; empty: ghcr.io/aquasecurity/trivy (the version this agent was tested with). The namespace needs a pull secret for it (see below). For example registry.corp.example/security/trivy:0.58.1
+  dbRepository: ""  # Trivy's vulnerability database as an OCI repository; empty: ghcr.io/aquasecurity/trivy-db:2. For example registry.corp.example/security/trivy-db:2

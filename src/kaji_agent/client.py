@@ -10,10 +10,11 @@ import logging
 import os
 import platform
 import random
+import time
 
 import websockets
 
-from . import clusterinfo, hostinfo, nodeprobe, sysinfo
+from . import clusterinfo, hostinfo, hostscan, imagescan, nodeprobe, sysinfo
 from .kube import KubeError
 from .sysinfo import schedulable  # noqa: F401  (what a node can take: see there)
 from .runner import Runner
@@ -93,6 +94,13 @@ class Agent:
         self.kube = kube  # the cluster the tasks run in; without one the agent only acknowledges them
         self.cluster_reports = os.environ.get("KAJI_CLUSTER_REPORT", "1") != "0"  # the chart's clusterReport: false switches the cluster report off
         self.cluster_warned = False
+        self.image_scans = os.environ.get("KAJI_IMAGE_SCAN", "1") != "0"  # the chart's imageScan: false never starts a Trivy Job
+        self.trivy_image = imagescan.trivy_image()  # an internal registry's, or the public one when KAJI_TRIVY_IMAGE is not set
+        self.trivy_db = imagescan.setting("KAJI_TRIVY_DB_REPOSITORY")  # an internal mirror of Trivy's database; empty: the public one
+        self.scanned = {}  # digest -> (when, whether it worked): what was scanned lately, so that the timer does not scan an image again at once
+        self.scanning = False
+        self.host_scans = os.environ.get("KAJI_HOST_SCAN", "1") != "0"  # a host agent scans its own packages with Trivy (hostscan.py); 0 never does
+        self.host_scanned = None  # (when, whether it worked) of the last scan of this host
 
     async def session(self, ws):
         async def send(message):
@@ -102,6 +110,16 @@ class Agent:
             Runner(self.kube, send) if self.kube and self.role == "builder" else None
         )
 
+        async def scan_host():  # then its vulnerabilities, if it is due: Trivy, fetched if the host has none (hostscan.py); it takes minutes, so not in the report's way
+            try:
+                result = await asyncio.to_thread(hostscan.scan)
+                self.host_scanned = (time.monotonic(), not result["error"])
+                if result["error"]:
+                    log.warning("could not scan this host: %s", result["error"])
+                await send({"type": "report", "kind": "hostscan", "report": result})
+            finally:
+                self.scanning = False
+
         async def report():  # a host says what it is and what is installed: read off the event loop, it walks the package database
             await send(
                 {
@@ -110,6 +128,10 @@ class Agent:
                     "report": await asyncio.to_thread(hostinfo.report),
                 }
             )
+            if self.host_scans and not self.scanning and hostscan.due(self.host_scanned, time.monotonic()):
+                self.scanning = True
+                running.add(task := asyncio.create_task(scan_host()))
+                task.add_done_callback(running.discard)
 
         async def cluster_report():  # a builder in a cluster also says what the cluster is: its nodes' OS and the images that run in it (clusterinfo.py)
             if not (self.kube and self.role == "builder" and self.cluster_reports):
@@ -121,9 +143,37 @@ class Agent:
                 return
             if found:
                 await send({"type": "report", "kind": "cluster", "report": found})
+                if self.image_scans and not self.scanning:
+                    self.scanning = True
+                    running.add(task := asyncio.create_task(scan_images(found.get("images") or [])))  # a scan takes minutes: the timer goes on meanwhile
+                    task.add_done_callback(running.discard)
             elif not self.cluster_warned:
                 self.cluster_warned = True
                 log.info("the cluster is not reported: the agent may not list nodes and pods (clusterReport in the chart)")
+
+        async def scan_images(images):  # the images that run and were not scanned lately: a Trivy Job each (imagescan.py), the findings sent as each one ends
+            try:
+                wanted = imagescan.pending(images, self.scanned)
+                if not wanted:
+                    return
+                secrets = await asyncio.to_thread(imagescan.pull_secrets_of_agent, self.kube)
+                slots = asyncio.Semaphore(imagescan.PARALLEL)
+
+                async def one(image, digest):
+                    async with slots:
+                        result = await asyncio.to_thread(
+                            imagescan.scan, self.kube, image, digest, self.trivy_image, secrets, self.trivy_db
+                        )
+                    self.scanned[digest] = (time.monotonic(), not result["error"])
+                    if result["error"]:
+                        log.warning("could not scan %s: %s", image, result["error"])
+                    await send({"type": "report", "kind": "images", "report": {"images": [result]}})
+
+                await asyncio.gather(*(one(i, d) for i, d in wanted))
+            except (KubeError, OSError) as err:  # the next report tries again
+                log.warning("could not scan the images: %s", err)
+            finally:
+                self.scanning = False
 
         async def every():
             while True:
